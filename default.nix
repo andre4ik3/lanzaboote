@@ -4,6 +4,7 @@
   rust-overlay ? sources.rust-overlay,
   pkgs ? import sources.nixpkgs {
     inherit system;
+    overlays = [ (import ./nix/overlay.nix) ];
   },
   crane ? import sources.crane { inherit pkgs; },
 }:

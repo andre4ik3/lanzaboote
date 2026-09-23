@@ -43,7 +43,7 @@
       lanzaboote = eachSystem (
         system:
         let
-          pkgs = nixpkgs.legacyPackages.${system};
+          pkgs = nixpkgs.legacyPackages.${system}.extend (import ./nix/overlay.nix);
         in
         import ./. {
           inherit system pkgs rust-overlay;
