@@ -460,12 +460,9 @@ impl<S: Signer> Installer<S> {
 
     /// Install systemd-boot to ESP.
     ///
-    /// systemd-boot is only updated when a newer version is available OR when the currently
-    /// installed version is not signed. This enables switching to Lanzaboote without having to
-    /// manually delete previous unsigned systemd-boot binaries and minimizes the number of writes
-    /// to the ESP.
-    ///
-    /// Checking for the version also allows us to skip buggy systemd versions in the future.
+    /// Keep newer binaries signed by our keys, and replace missing, changed or untrusted
+    /// binaries with the reproducibly signed candidate. Preserve measurements for both
+    /// the installed and the booted boot loader throughout updates.
     fn install_systemd_boot(&mut self) -> Result<()> {
         let systemd_boot_candidate = self
             .systemd
@@ -488,25 +485,25 @@ impl<S: Signer> Installer<S> {
             }
         };
 
-        let fallback = &self.esp_paths.efi_fallback;
-        let fallback_version = match SystemdVersion::from_systemd_boot_binary(fallback) {
-            Ok(version) => Some(version),
-            Err(_) if !fallback.exists() => None,
-            Err(e) => {
-                log::warn!("Failed to read systemd-boot version from {fallback:?}: {e:#}");
-                None
-            }
-        };
-
-        let newer_systemd_boot_available = match (&primary_version, &fallback_version) {
-            (Some(primary), Some(fallback)) => {
-                candidate_version > *primary || candidate_version > *fallback
-            }
-            _ => true,
-        };
-        if newer_systemd_boot_available {
-            log::info!("Updating systemd-boot...")
-        };
+        let signed = self
+            .signer
+            .sign_store_path(&systemd_boot_candidate)
+            .with_context(|| format!("Failed to sign {systemd_boot_candidate:?}"))?;
+        let signers = pe::signer_certificates(&signed).ok();
+        let outdated = [&self.esp_paths.efi_fallback, &self.esp_paths.systemd_boot]
+            .into_iter()
+            .filter_map(|to| match fs::read(to) {
+                Ok(current) if current == signed => None,
+                Ok(current) => Some(current),
+                Err(_) => Some(Vec::new()),
+            })
+            .any(|current| {
+                let same_signer =
+                    signers.is_some() && pe::signer_certificates(&current).ok() == signers;
+                !same_signer
+                    || SystemdVersion::from_pe_bytes(&current)
+                        .map_or(true, |version| version <= candidate_version)
+            });
 
         let systemd_boot_is_signed = self.signer.verify_path(&self.esp_paths.efi_fallback)?
             && self.signer.verify_path(&self.esp_paths.systemd_boot)?;
@@ -518,7 +515,7 @@ impl<S: Signer> Installer<S> {
         // `None` if it is replaced by the candidate.
         let keep_installed = primary_version
             .as_ref()
-            .filter(|_| !newer_systemd_boot_available && systemd_boot_is_signed);
+            .filter(|_| !outdated && systemd_boot_is_signed);
 
         // Boot loader measurements are named after their corresponding systemd version. This way
         // the measurement of the booted boot loader can survive multiple consecutive loader updates
@@ -627,7 +624,8 @@ impl<S: Signer> Installer<S> {
         if keep_installed.is_none() {
             for to in [&self.esp_paths.efi_fallback, &self.esp_paths.systemd_boot] {
                 log::info!("Installing {}", to.display());
-                install_signed(&self.signer, &systemd_boot_candidate, to)
+                ensure_parent_dir(to);
+                atomic_write(&signed, to)
                     .with_context(|| format!("Failed to install systemd-boot binary to: {to:?}"))?;
             }
         }
@@ -773,6 +771,22 @@ fn atomic_copy(from: &Path, to: &Path) -> Result<()> {
         std::io::copy(&mut from_file, &mut tmp_file).with_context(|| {
             format!("Failed to copy from {from:?} to the temporary file {tmp:?}")
         })?;
+        tmp_file
+            .sync_all()
+            .with_context(|| format!("Failed to sync the temporary file {tmp:?}"))?;
+    }
+    fs::rename(&tmp, to)
+        .with_context(|| format!("Failed to move temporary file {tmp:?} to target {to:?}"))
+}
+
+/// Atomically write `contents` to `to` (write a temporary file, sync, rename).
+fn atomic_write(contents: &[u8], to: &Path) -> Result<()> {
+    let tmp = to.with_extension(".tmp");
+    {
+        let mut tmp_file = File::create(&tmp)
+            .with_context(|| format!("Failed to create the temporary file {tmp:?}"))?;
+        std::io::Write::write_all(&mut tmp_file, contents)
+            .with_context(|| format!("Failed to write the temporary file {tmp:?}"))?;
         tmp_file
             .sync_all()
             .with_context(|| format!("Failed to sync the temporary file {tmp:?}"))?;

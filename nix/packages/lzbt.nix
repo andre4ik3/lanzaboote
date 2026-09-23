@@ -3,6 +3,7 @@
   buildRustApp,
   makeBinaryWrapper,
   binutils-unwrapped,
+  openssl,
   sbsigntool,
   systemd,
   stub,
@@ -26,9 +27,16 @@ buildRustApp {
     nativeCheckInputs = [
       binutils-unwrapped
       sbsigntool
+      # To inspect signatures in the integration tests.
+      openssl
     ];
 
     env.TEST_SYSTEMD = systemd;
+
+    # systemd-sbsign lives in lib/systemd, which is not on PATH by default.
+    preCheck = ''
+      export PATH=${systemd}/lib/systemd:$PATH
+    '';
 
     postInstall =
       let

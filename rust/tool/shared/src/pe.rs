@@ -223,6 +223,32 @@ fn esp_relative_uefi_path(esp: &Path, path: &Path) -> Result<String> {
     Ok(format!("\\{}", uefi_path))
 }
 
+/// The certificates of the Authenticode signatures in a PE image's certificate table, in
+/// signing order: which keys signed it, independent of the image contents.
+pub fn signer_certificates(image: &[u8]) -> Result<Vec<Vec<u8>>> {
+    use cms::content_info::ContentInfo;
+    use cms::signed_data::{CertificateSet, SignedData};
+    use x509_cert::der::{Decode, Encode, SliceReader};
+
+    let pe = goblin::pe::PE::parse(image).context("Failed to parse PE image")?;
+    let mut certificates = Vec::new();
+    for attribute_certificate in &pe.certificates {
+        // The certificate may carry up to 7 bytes of padding after the DER (older
+        // systemd-sbsign counted them in dwLength), so decode the leading value only.
+        let mut reader = SliceReader::new(attribute_certificate.certificate)?;
+        let content_info =
+            ContentInfo::decode(&mut reader).context("Invalid Authenticode signature")?;
+        let signed_data: SignedData = content_info.content.decode_as()?;
+        let CertificateSet(set) = signed_data
+            .certificates
+            .unwrap_or(CertificateSet(Default::default()));
+        for choice in set.iter() {
+            certificates.push(choice.to_der()?);
+        }
+    }
+    Ok(certificates)
+}
+
 /// Convert a path to a UEFI string representation.
 ///
 /// This might not _necessarily_ produce a valid UEFI path, since some UEFI implementations might
