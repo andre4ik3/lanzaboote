@@ -9,19 +9,24 @@
       ...
     }:
     let
-      # Private keys must be in the Nix Store because the stub is installed by ./common/image.nix on the host
-      privateKeyFile = pkgs.runCommand "tpm2-pcr-private-key.pem" { } ''
-        ${lib.getExe pkgs.openssl} genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out $out
-      '';
-      publicKeyFile = pkgs.runCommand "tpm2-pcr-public-key.pem" { } ''
-        ${lib.getExe pkgs.openssl} rsa -pubout -in ${privateKeyFile} -out $out
-      '';
-      privateKeyInitrdFile = pkgs.runCommand "tpm2-pcr-initrd-private-key.pem" { } ''
-        ${lib.getExe pkgs.openssl} genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out $out
-      '';
-      publicKeyInitrdFile = pkgs.runCommand "tpm2-pcr-initrd-public-key.pem" { } ''
-        ${lib.getExe pkgs.openssl} rsa -pubout -in ${privateKeyInitrdFile} -out $out
-      '';
+      # Private keys must be in the Nix Store because the stub is installed by ./common/image.nix on the host.
+      #
+      # Each pair is generated in a single derivation: genpkey is not reproducible, so deriving the
+      # public key in a separate derivation lets a rebuilt private key end up next to a cached
+      # public key from an earlier build, and the signatures stop matching the enrolled key.
+      mkKeyPair =
+        name:
+        pkgs.runCommand name { } ''
+          mkdir $out
+          ${lib.getExe pkgs.openssl} genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out $out/private.pem
+          ${lib.getExe pkgs.openssl} rsa -pubout -in $out/private.pem -out $out/public.pem
+        '';
+      keyPair = mkKeyPair "tpm2-pcr-key";
+      keyPairInitrd = mkKeyPair "tpm2-pcr-initrd-key";
+      privateKeyFile = "${keyPair}/private.pem";
+      publicKeyFile = "${keyPair}/public.pem";
+      privateKeyInitrdFile = "${keyPairInitrd}/private.pem";
+      publicKeyInitrdFile = "${keyPairInitrd}/public.pem";
     in
     {
       imports = [ ./common/lanzaboote.nix ];
