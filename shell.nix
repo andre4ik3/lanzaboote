@@ -14,9 +14,6 @@ pkgs.mkShell {
     # Convenience for test fixtures in nix/tests.
     pkgs.openssl
 
-    # Needed for `cargo test` in rust/tool. We also need
-    # TEST_SYSTEMD below for that.
-    pkgs.sbsigntool
   ];
 
   inputsFrom = [

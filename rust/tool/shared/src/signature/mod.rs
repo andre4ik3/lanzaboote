@@ -20,9 +20,6 @@ pub use local::LocalKeyPair;
 ///   for specific signers.
 /// - get a *stable* opaque public key identifier used for content addressing
 ///   on the ESP partition
-/// - verify a PE binary for its signature
-/// - verify a specific path to a PE binary for its signature: automatically derived from the
-///   previous but can be provided for simpler implementation.
 ///
 /// To implement a new signer, provide a minimal implementation of this trait
 /// and pass this implementation to any front-facing tool of Lanzaboote, e.g. `lzbt-systemd`
@@ -48,15 +45,5 @@ pub trait Signer {
     /// Assumes that `from` points at a PE binary and installs a signed copy of `from` at `to`.
     fn sign_and_copy(&self, from: &Path, to: &Path) -> Result<()> {
         Ok(std::fs::write(to, self.sign_store_path(from)?)?)
-    }
-
-    /// Verify the signature of a PE binary, provided as bytes.
-    /// Return true if the signature was verified.
-    fn verify(&self, pe_binary: &[u8]) -> Result<bool>;
-
-    /// Verify the signature of a PE binary, provided by its path.
-    /// Return true if the signature was verified.
-    fn verify_path(&self, from: &Path) -> Result<bool> {
-        self.verify(&std::fs::read(from).expect("Failed to read the path to verify"))
     }
 }

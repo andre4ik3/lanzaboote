@@ -49,13 +49,17 @@ struct InstallCommand {
     #[arg(long, num_args = 1)]
     allow_unsigned: bool,
 
-    /// sbsign Public Key
+    /// Secure Boot certificate (PEM)
     #[arg(long)]
     public_key: Option<PathBuf>,
 
-    /// sbsign Private Key
+    /// Secure Boot private key: a PEM file, or a key reference for --private-key-source
     #[arg(long)]
     private_key: Option<PathBuf>,
+
+    /// Where the private key comes from, passed to systemd-sbsign (e.g. `provider:tpm2`)
+    #[arg(long)]
+    private_key_source: Option<String>,
 
     /// Configuration limit
     #[arg(long, default_value_t = 1)]
@@ -132,7 +136,7 @@ fn install(args: InstallCommand) -> Result<()> {
         let signer = EmptyKeyPair;
         installer_builder.build(signer).install()
     } else {
-        let signer = LocalKeyPair::new(public_key, private_key);
+        let signer = LocalKeyPair::new(public_key, private_key, args.private_key_source);
         installer_builder.build(signer).install()
     }
 }

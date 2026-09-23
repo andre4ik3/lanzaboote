@@ -144,7 +144,7 @@ pub fn setup_toplevel(tmpdir: &Path) -> Result<PathBuf> {
 
     // To simplify the test setup, we use the systemd stub for all PE binaries used by lanzatool.
     // Lanzatool doesn't care whether its actually a kernel or initrd but only whether it can
-    // manipulate the PE binary with objcopy and/or sign it with sbsigntool. For testing lanzatool
+    // manipulate the PE binary with objcopy and/or sign it with systemd-sbsign. For testing lanzatool
     // in isolation this should suffice.
     fs::copy(&test_systemd_stub, initrd_path)?;
     fs::copy(&test_systemd_stub, kernel_path)?;
@@ -235,29 +235,121 @@ pub fn hash_file(path: &Path) -> sha2::digest::Output<Sha256> {
     Sha256::digest(fs::read(path).expect("Failed to read file to hash."))
 }
 
-/// Remove signature from a signed PE file.
+/// Remove the signature from a signed PE file by clearing its certificate table data directory
+/// and truncating the attribute certificates, which sit at the end of the file.
 pub fn remove_signature(path: &Path) -> Result<()> {
-    let output = Command::new("sbattach")
-        .arg("--remove")
-        .arg(path.as_os_str())
-        .output()
-        .context("Failed to run sbattach. Most likely, the binary is not on PATH.")?;
-    print!("{}", String::from_utf8(output.stdout)?);
-    print!("{}", String::from_utf8(output.stderr)?);
+    let mut data = fs::read(path)?;
+    let pe = goblin::pe::PE::parse(&data)?;
+    let Some(table) = pe
+        .header
+        .optional_header
+        .and_then(|h| h.data_directories.get_certificate_table().copied())
+    else {
+        return Ok(());
+    };
+    let pe_offset = pe.header.dos_header.pe_pointer as usize;
+    let optional_header_offset = pe_offset + 4 + goblin::pe::header::SIZEOF_COFF_HEADER;
+    let data_directories_offset = optional_header_offset + if pe.is_64 { 112 } else { 96 };
+    let certificate_table_entry =
+        data_directories_offset + 4 * goblin::pe::data_directories::SIZEOF_DATA_DIRECTORY;
+    data[certificate_table_entry..certificate_table_entry + 8].fill(0);
+    data.truncate(table.virtual_address as usize);
+    fs::write(path, data)?;
     Ok(())
 }
 
-/// Verify signature of PE file.
+/// Verify the Authenticode signature of a PE file against the test certificate.
+///
+/// Only checks that the file carries a PKCS#7 signature made by the test key; the Authenticode
+/// digest itself is covered by systemd-sbsign and the firmware in the VM tests.
 pub fn verify_signature(path: &Path) -> Result<bool> {
-    let output = Command::new("sbverify")
-        .arg(path.as_os_str())
-        .arg("--cert")
-        .arg("tests/fixtures/uefi-keys/db.pem")
+    let data = fs::read(path)?;
+    let Ok(pe) = goblin::pe::PE::parse(&data) else {
+        return Ok(false);
+    };
+    let Some(certificate) = pe.certificates.first() else {
+        return Ok(false);
+    };
+
+    let tmp = tempfile::tempdir()?;
+    let pkcs7 = tmp.path().join("signature.p7");
+    fs::write(&pkcs7, certificate.certificate)?;
+    let output = std::process::Command::new("openssl")
+        .args(["pkcs7", "-inform", "DER", "-print_certs", "-noout", "-in"])
+        .arg(&pkcs7)
         .output()
-        .context("Failed to run sbverify. Most likely, the binary is not on PATH.")?;
-    print!("{}", String::from_utf8(output.stdout)?);
-    print!("{}", String::from_utf8(output.stderr)?);
-    Ok(output.status.success())
+        .context("Failed to run openssl. Most likely, the binary is not on PATH.")?;
+    let signer = String::from_utf8(output.stdout)?;
+    let expected = std::process::Command::new("openssl")
+        .args([
+            "x509",
+            "-noout",
+            "-subject",
+            "-in",
+            "tests/fixtures/uefi-keys/db.pem",
+        ])
+        .output()?;
+    let expected = String::from_utf8(expected.stdout)?;
+    Ok(output.status.success() && signer.contains(expected.trim()))
+}
+
+/// Make a systemd-boot binary report another version, by rewriting `VERSION="..."` in its
+/// `.osrel` section in place (`bump` maps the old version to one of the same length).
+pub fn bump_osrel_version(path: &Path, bump: impl Fn(&str) -> String) -> Result<()> {
+    let mut data = fs::read(path)?;
+    let needle = b"VERSION=\"";
+    let start = data
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .context("No VERSION in .osrel")?
+        + needle.len();
+    let end = start
+        + data[start..]
+            .iter()
+            .position(|&b| b == b'"')
+            .context("Unterminated VERSION")?;
+    let version = bump(std::str::from_utf8(&data[start..end])?);
+    anyhow::ensure!(
+        version.len() == end - start,
+        "Version {version} must have the length of {:?}",
+        String::from_utf8_lossy(&data[start..end])
+    );
+    data[start..end].copy_from_slice(version.as_bytes());
+    fs::write(path, data)?;
+    Ok(())
+}
+
+/// Sign a PE file in place with a freshly generated key (not the test fixture key).
+pub fn sign_with_other_key(path: &Path, tmpdir: &Path) -> Result<()> {
+    let key = tmpdir.join("other.key");
+    let cert = tmpdir.join("other.pem");
+    if !key.exists() {
+        let status = std::process::Command::new("openssl")
+            .args([
+                "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+            ])
+            .args(["-subj", "/CN=Some Other Key/", "-keyout"])
+            .arg(&key)
+            .arg("-out")
+            .arg(&cert)
+            .status()?;
+        anyhow::ensure!(status.success(), "openssl req failed");
+    }
+    let signed = tmpdir.join("signed.efi");
+    let status = std::process::Command::new("systemd-sbsign")
+        .arg("sign")
+        .arg("--private-key")
+        .arg(&key)
+        .arg("--certificate")
+        .arg(&cert)
+        .arg("--output")
+        .arg(&signed)
+        .arg(path)
+        .status()
+        .context("Failed to run systemd-sbsign")?;
+    anyhow::ensure!(status.success(), "systemd-sbsign failed");
+    fs::rename(&signed, path)?;
+    Ok(())
 }
 
 pub fn count_files(path: &Path) -> Result<usize> {

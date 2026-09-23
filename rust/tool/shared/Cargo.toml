@@ -19,4 +19,6 @@ fastrand = "2.3.0"
 goblin.workspace = true
 serde = { version = "1.0.228", features = ["derive"] }
 time = "0.3"
+cms = "0.2"
+x509-cert = { version = "0.2", default-features = false, features = ["pem", "std"] }
 walkdir = "2"

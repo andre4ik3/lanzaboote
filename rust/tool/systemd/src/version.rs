@@ -30,8 +30,13 @@ impl SystemdVersion {
     /// Read the systemd version from the `.osrel` section of a systemd-boot binary.
     pub fn from_systemd_boot_binary(path: &Path) -> Result<Self> {
         let file_data = fs::read(path).with_context(|| format!("Failed to read file {path:?}"))?;
-        let section_data = pe::read_section_data(&file_data, ".osrel")
-            .with_context(|| format!("PE section '.osrel' is empty: {path:?}"))?;
+        Self::from_pe_bytes(&file_data).with_context(|| format!("In {path:?}"))
+    }
+
+    /// Read the systemd version from the `.osrel` section of systemd-boot's PE image.
+    pub fn from_pe_bytes(file_data: &[u8]) -> Result<Self> {
+        let section_data =
+            pe::read_section_data(file_data, ".osrel").context("PE section '.osrel' is empty")?;
 
         // The `.osrel` section in the systemd-boot binary may be NUL-terminated or not
         // so we need to handle both cases.

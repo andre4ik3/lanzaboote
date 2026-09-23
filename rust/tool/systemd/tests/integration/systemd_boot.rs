@@ -112,6 +112,38 @@ fn overwrite_unsigned_systemd_boot_binaries() -> Result<()> {
     Ok(())
 }
 
+/// A newer systemd-boot on the ESP is kept only if our key(s) signed it. After a key change
+/// (e.g. moving to TPM-held keys), firmware may no longer trust the old signature, so the binary
+/// must be replaced even though it would otherwise be a downgrade.
+#[test]
+fn replace_newer_systemd_boot_signed_by_another_key() -> Result<()> {
+    let esp = tempdir()?;
+    let tmpdir = tempdir()?;
+    let profiles = tempdir()?;
+    let generation_link = common::setup_generation_link(tmpdir.path(), profiles.path(), 1)
+        .expect("Failed to setup generation link");
+
+    let output0 = common::lanzaboote_install(0, esp.path(), vec![&generation_link])?;
+    assert!(output0.status.success());
+
+    for path in [systemd_boot_path(&esp), systemd_boot_fallback_path(&esp)] {
+        // Pretend the ESP has a far newer systemd-boot, signed by some other key.
+        remove_signature(&path)?;
+        // e.g. 261.2 -> 961.2: same length, newer.
+        common::bump_osrel_version(&path, |version| format!("9{}", &version[1..]))?;
+        common::sign_with_other_key(&path, tmpdir.path())?;
+        assert!(!verify_signature(&path)?);
+    }
+
+    let output1 = common::lanzaboote_install(0, esp.path(), vec![generation_link])?;
+    assert!(output1.status.success());
+
+    assert!(verify_signature(&systemd_boot_path(&esp))?);
+    assert!(verify_signature(&systemd_boot_fallback_path(&esp))?);
+
+    Ok(())
+}
+
 fn systemd_boot_path(esp: &tempfile::TempDir) -> PathBuf {
     let arch = Architecture::from_nixos_system(SYSTEM).unwrap();
     esp.path()
