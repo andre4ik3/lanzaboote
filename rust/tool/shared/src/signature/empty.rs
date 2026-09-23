@@ -40,12 +40,4 @@ impl Signer for EmptyKeyPair {
 
         std::fs::read(&lzbt_image_path).context("Failed to read a lanzaboote image")
     }
-
-    fn verify(&self, _pe_binary: &[u8]) -> Result<bool> {
-        Ok(true)
-    }
-
-    fn verify_path(&self, _path: &Path) -> Result<bool> {
-        Ok(true)
-    }
 }

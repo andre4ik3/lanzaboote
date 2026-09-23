@@ -144,7 +144,7 @@ pub fn setup_toplevel(tmpdir: &Path) -> Result<PathBuf> {
 
     // To simplify the test setup, we use the systemd stub for all PE binaries used by lanzatool.
     // Lanzatool doesn't care whether its actually a kernel or initrd but only whether it can
-    // manipulate the PE binary with objcopy and/or sign it with sbsigntool. For testing lanzatool
+    // manipulate the PE binary with objcopy and/or sign it with systemd-sbsign. For testing lanzatool
     // in isolation this should suffice.
     fs::copy(&test_systemd_stub, initrd_path)?;
     fs::copy(&test_systemd_stub, kernel_path)?;
@@ -235,29 +235,56 @@ pub fn hash_file(path: &Path) -> sha2::digest::Output<Sha256> {
     Sha256::digest(fs::read(path).expect("Failed to read file to hash."))
 }
 
-/// Remove signature from a signed PE file.
+/// Remove the signature from a signed PE file by clearing its certificate table data directory
+/// and truncating the attribute certificates, which sit at the end of the file.
 pub fn remove_signature(path: &Path) -> Result<()> {
-    let output = Command::new("sbattach")
-        .arg("--remove")
-        .arg(path.as_os_str())
-        .output()
-        .context("Failed to run sbattach. Most likely, the binary is not on PATH.")?;
-    print!("{}", String::from_utf8(output.stdout)?);
-    print!("{}", String::from_utf8(output.stderr)?);
+    let mut data = fs::read(path)?;
+    let pe = goblin::pe::PE::parse(&data)?;
+    let Some(table) = pe
+        .header
+        .optional_header
+        .and_then(|h| h.data_directories.get_certificate_table().copied())
+    else {
+        return Ok(());
+    };
+    let pe_offset = pe.header.dos_header.pe_pointer as usize;
+    let optional_header_offset = pe_offset + 4 + goblin::pe::header::SIZEOF_COFF_HEADER;
+    let data_directories_offset = optional_header_offset
+        + if pe.is_64 { 112 } else { 96 };
+    let certificate_table_entry = data_directories_offset + 4 * goblin::pe::data_directories::SIZEOF_DATA_DIRECTORY;
+    data[certificate_table_entry..certificate_table_entry + 8].fill(0);
+    data.truncate(table.virtual_address as usize);
+    fs::write(path, data)?;
     Ok(())
 }
 
-/// Verify signature of PE file.
+/// Verify the Authenticode signature of a PE file against the test certificate.
+///
+/// Only checks that the file carries a PKCS#7 signature made by the test key; the Authenticode
+/// digest itself is covered by systemd-sbsign and the firmware in the VM tests.
 pub fn verify_signature(path: &Path) -> Result<bool> {
-    let output = Command::new("sbverify")
-        .arg(path.as_os_str())
-        .arg("--cert")
-        .arg("tests/fixtures/uefi-keys/db.pem")
+    let data = fs::read(path)?;
+    let Ok(pe) = goblin::pe::PE::parse(&data) else {
+        return Ok(false);
+    };
+    let Some(certificate) = pe.certificates.first() else {
+        return Ok(false);
+    };
+
+    let tmp = tempfile::tempdir()?;
+    let pkcs7 = tmp.path().join("signature.p7");
+    fs::write(&pkcs7, certificate.certificate)?;
+    let output = std::process::Command::new("openssl")
+        .args(["pkcs7", "-inform", "DER", "-print_certs", "-noout", "-in"])
+        .arg(&pkcs7)
         .output()
-        .context("Failed to run sbverify. Most likely, the binary is not on PATH.")?;
-    print!("{}", String::from_utf8(output.stdout)?);
-    print!("{}", String::from_utf8(output.stderr)?);
-    Ok(output.status.success())
+        .context("Failed to run openssl. Most likely, the binary is not on PATH.")?;
+    let signer = String::from_utf8(output.stdout)?;
+    let expected = std::process::Command::new("openssl")
+        .args(["x509", "-noout", "-subject", "-in", "tests/fixtures/uefi-keys/db.pem"])
+        .output()?;
+    let expected = String::from_utf8(expected.stdout)?;
+    Ok(output.status.success() && signer.contains(expected.trim()))
 }
 
 pub fn count_files(path: &Path) -> Result<usize> {

@@ -1,5 +1,4 @@
 use crate::pe::lanzaboote_image;
-use crate::utils::SecureTempDirExt;
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -15,22 +14,26 @@ use super::Signer;
 ///
 /// The security of the private key is the responsibility of the user.
 ///
-/// Currently, signature happens via `sbsign` where the input is temporarily
-/// copied in a secure directory and signed over there.
+/// Signing happens via `systemd-sbsign`. `private_key_source` is passed on as
+/// `--private-key-source=` (e.g. `provider:tpm2`), so the private key can also
+/// be a reference to a key held by an OpenSSL provider rather than a PEM file.
 ///
-/// In the future, `sbsign` may be removed to perform signature in-memory
-/// without any temporary directory.
+/// Signatures are made with a fixed signing time, so signing the same input
+/// with the same RSA key yields identical bytes. That lets callers re-sign
+/// unconditionally and only write the result when it differs.
 #[derive(Debug, Clone)]
 pub struct LocalKeyPair {
     pub private_key: PathBuf,
+    pub private_key_source: Option<String>,
     pub public_key: PathBuf,
 }
 
 impl LocalKeyPair {
-    pub fn new(public_key: &Path, private_key: &Path) -> Self {
+    pub fn new(public_key: &Path, private_key: &Path, private_key_source: Option<String>) -> Self {
         Self {
             public_key: public_key.into(),
             private_key: private_key.into(),
+            private_key_source,
         }
     }
 }
@@ -46,26 +49,34 @@ impl Signer for LocalKeyPair {
     }
 
     fn sign_and_copy(&self, from: &Path, to: &Path) -> Result<()> {
-        let args: Vec<OsString> = vec![
-            OsString::from("--key"),
+        let mut args: Vec<OsString> = vec![
+            OsString::from("sign"),
+            OsString::from("--private-key"),
             self.private_key.clone().into(),
-            OsString::from("--cert"),
+            OsString::from("--certificate"),
             self.public_key.clone().into(),
-            from.as_os_str().to_owned(),
             OsString::from("--output"),
             to.as_os_str().to_owned(),
         ];
+        if let Some(source) = &self.private_key_source {
+            args.push(OsString::from("--private-key-source"));
+            args.push(source.into());
+        }
+        args.push(from.as_os_str().to_owned());
 
-        let output = Command::new("sbsign")
+        let output = Command::new("systemd-sbsign")
+            // The signing time is part of the signature. Pinning it makes the
+            // output reproducible; the value carries no meaning for Secure Boot.
+            .env("SOURCE_DATE_EPOCH", "1")
             .args(&args)
             .output()
-            .context("Failed to run sbsign. Most likely, the binary is not on PATH.")?;
+            .context("Failed to run systemd-sbsign. Most likely, the binary is not on PATH.")?;
 
         if !output.status.success() {
             std::io::stderr()
                 .write_all(&output.stderr)
-                .context("Failed to write output of sbsign to stderr.")?;
-            log::debug!("sbsign failed with args: `{args:?}`.");
+                .context("Failed to write output of systemd-sbsign to stderr.")?;
+            log::debug!("systemd-sbsign failed with args: `{args:?}`.");
             return Err(anyhow::anyhow!("Failed to sign {to:?}."));
         }
 
@@ -88,36 +99,5 @@ impl Signer for LocalKeyPair {
         self.sign_and_copy(&lzbt_image_path, &to)?;
 
         std::fs::read(&to).context("Failed to read a lanzaboote image")
-    }
-
-    fn verify(&self, pe_binary: &[u8]) -> Result<bool> {
-        let working_tree = tempdir().context("Failed to get a temporary working tree")?;
-        let from = working_tree
-            .write_secure_file(pe_binary)
-            .context("Failed to write the PE binary in a secure file for verification")?;
-
-        self.verify_path(&from)
-    }
-
-    fn verify_path(&self, path: &Path) -> Result<bool> {
-        let args: Vec<OsString> = vec![
-            OsString::from("--cert"),
-            self.public_key.clone().into(),
-            path.as_os_str().to_owned(),
-        ];
-
-        let output = Command::new("sbverify")
-            .args(&args)
-            .output()
-            .context("Failed to run sbverify. Most likely, the binary is not on PATH.")?;
-
-        if !output.status.success() {
-            if std::io::stderr().write_all(&output.stderr).is_err() {
-                return Ok(false);
-            };
-            log::debug!("sbverify failed with args: `{args:?}`.");
-            return Ok(false);
-        }
-        Ok(true)
     }
 }

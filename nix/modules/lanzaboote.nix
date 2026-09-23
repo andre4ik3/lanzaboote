@@ -31,6 +31,9 @@ let
           "--public-key=${toString cfg.publicKeyFile}"
           "--private-key=${toString cfg.privateKeyFile}"
         ]
+        ++ lib.optionals (cfg.privateKeySource != null) [
+          "--private-key-source=${cfg.privateKeySource}"
+        ]
         ++ lib.optionals (cfg.measuredBoot.enable && pcr 4) [
           "--pcrlock-directory=${cfg.measuredBoot.pcrlockDirectory}"
         ]
@@ -131,6 +134,18 @@ in
       default = "${cfg.pkiBundle}/keys/db/db.key";
       defaultText = "\${config.boot.lanzaboote.pkiBundle}/keys/db/db.key";
       description = "Private key to sign your boot files";
+    };
+
+    privateKeySource = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "provider:tpm2";
+      description = ''
+        Where `privateKeyFile` comes from, passed to `systemd-sbsign
+        --private-key-source=`. With an OpenSSL provider, `privateKeyFile` is
+        whatever that provider accepts, e.g. a TPM key file. The provider must
+        be loadable by systemd-sbsign (e.g. via `OPENSSL_MODULES`).
+      '';
     };
 
     package = lib.mkOption {
@@ -691,8 +706,14 @@ in
       };
       # Place the fwupd efi files in /run and sign them
       script = ''
-        ln -sf ${config.services.fwupd.package.fwupd-efi}/libexec/fwupd/efi/fwupd*.efi /run/fwupd-efi/
-        ${lib.getExe' pkgs.sbsigntool "sbsign"} --key '${cfg.privateKeyFile}' --cert '${cfg.publicKeyFile}' /run/fwupd-efi/fwupd*.efi
+        for efi in ${config.services.fwupd.package.fwupd-efi}/libexec/fwupd/efi/fwupd*.efi; do
+          ln -sf "$efi" /run/fwupd-efi/
+          ${config.systemd.package}/lib/systemd/systemd-sbsign sign \
+            --private-key='${cfg.privateKeyFile}' \
+            --certificate='${cfg.publicKeyFile}' \
+            ${lib.optionalString (cfg.privateKeySource != null) "--private-key-source='${cfg.privateKeySource}'"} \
+            --output="/run/fwupd-efi/$(basename "$efi").signed" "$efi"
+        done
       '';
     };
 

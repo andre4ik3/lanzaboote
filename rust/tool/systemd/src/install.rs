@@ -435,33 +435,34 @@ impl<S: Signer> Installer<S> {
 
     /// Install systemd-boot to ESP.
     ///
-    /// systemd-boot is only updated when a newer version is available OR when the currently
-    /// installed version is not signed. This enables switching to Lanzaboote without having to
-    /// manually delete previous unsigned systemd-boot binaries and minimizes the number of writes
-    /// to the ESP.
-    ///
-    /// Checking for the version also allows us to skip buggy systemd versions in the future.
+    /// systemd-boot is always signed, but only written when the signed binary differs from the
+    /// one on the ESP and is not a downgrade. Signing is reproducible, so this catches a newer
+    /// systemd-boot, a rotated key, and a missing, unsigned or corrupted binary alike, while
+    /// leaving the ESP untouched in the common case.
     fn install_systemd_boot(&self) -> Result<()> {
         let systemd_boot = self
             .systemd
             .join("lib/systemd/boot/efi")
             .join(self.arch.systemd_filename());
 
-        let newer_systemd_boot_available =
-            newer_systemd_boot(&systemd_boot, &self.esp_paths.efi_fallback)?
-                || newer_systemd_boot(&systemd_boot, &self.esp_paths.systemd_boot)?;
-        if newer_systemd_boot_available {
-            log::info!("Updating systemd-boot...")
-        };
+        let signed = self
+            .signer
+            .sign_store_path(&systemd_boot)
+            .with_context(|| format!("Failed to sign {systemd_boot:?}"))?;
 
-        let systemd_boot_is_signed = self.signer.verify_path(&self.esp_paths.efi_fallback)?
-            && self.signer.verify_path(&self.esp_paths.systemd_boot)?;
-        if !systemd_boot_is_signed {
-            log::warn!("systemd-boot is not signed. Replacing it with a signed binary...")
-        };
+        let version = SystemdVersion::from_systemd_boot_binary(&systemd_boot)
+            .with_context(|| format!("Failed to read systemd-boot version from {systemd_boot:?}."))?;
+        let outdated = [&self.esp_paths.efi_fallback, &self.esp_paths.systemd_boot]
+            .into_iter()
+            .filter(|to| fs::read(to).map_or(true, |current| current != signed))
+            // Never downgrade, e.g. when switching back to an older generation (like
+            // `bootctl update`). An unreadable version means the binary is malformed and gets
+            // replaced.
+            .any(|to| {
+                SystemdVersion::from_systemd_boot_binary(to).map_or(true, |current| current <= version)
+            });
 
         // If Measured Boot is not enabled (i.e. `pcrlock_paths` is `None`), this should be true.
-        // Otherwise we will always re-install systemd-boot if Measured Boot is disabled.
         let measurement_exists = self
             .pcrlock_paths
             .as_ref()
@@ -472,7 +473,7 @@ impl<S: Signer> Installer<S> {
             )
         };
 
-        if newer_systemd_boot_available || !systemd_boot_is_signed || !measurement_exists {
+        if outdated || !measurement_exists {
             if let Some(pcrlock_paths) = &self.pcrlock_paths {
                 // We do not version the bootloader measurement file. There will only ever be one
                 // bootloader version installed on the ESP and there is no rollback mechanism for it.
@@ -487,7 +488,8 @@ impl<S: Signer> Installer<S> {
 
             for to in [&self.esp_paths.efi_fallback, &self.esp_paths.systemd_boot] {
                 log::info!("Installing {}", to.display());
-                install_signed(&self.signer, &systemd_boot, to)
+                ensure_parent_dir(to);
+                atomic_write(&signed, to)
                     .with_context(|| format!("Failed to install systemd-boot binary to: {to:?}"))?;
             }
 
@@ -660,6 +662,22 @@ fn atomic_copy(from: &Path, to: &Path) -> Result<()> {
         .with_context(|| format!("Failed to move temporary file {tmp:?} to target {to:?}"))
 }
 
+/// Atomically write `contents` to `to` (write a temporary file, sync, rename).
+fn atomic_write(contents: &[u8], to: &Path) -> Result<()> {
+    let tmp = to.with_extension(".tmp");
+    {
+        let mut tmp_file = File::create(&tmp)
+            .with_context(|| format!("Failed to create the temporary file {tmp:?}"))?;
+        std::io::Write::write_all(&mut tmp_file, contents)
+            .with_context(|| format!("Failed to write the temporary file {tmp:?}"))?;
+        tmp_file
+            .sync_all()
+            .with_context(|| format!("Failed to sync the temporary file {tmp:?}"))?;
+    }
+    fs::rename(&tmp, to)
+        .with_context(|| format!("Failed to move temporary file {tmp:?} to target {to:?}"))
+}
+
 /// Set the octal permission bits of the specified file.
 fn set_permission_bits(path: &Path, permission_bits: u32) -> Result<()> {
     let mut perms = fs::metadata(path)
@@ -677,28 +695,3 @@ fn ensure_parent_dir(path: &Path) {
     }
 }
 
-/// Determine if a newer systemd-boot version is available.
-///
-/// "Newer" can mean
-///   (1) no file exists at the destination,
-///   (2) the file at the destination is malformed,
-///   (3) a binary with a higher version is available.
-fn newer_systemd_boot(from: &Path, to: &Path) -> Result<bool> {
-    // If the file doesn't exists at the destination, it should be installed.
-    if !to.exists() {
-        return Ok(true);
-    }
-
-    // If the version from the source binary cannot be read, something is irrecoverably wrong.
-    let from_version = SystemdVersion::from_systemd_boot_binary(from)
-        .with_context(|| format!("Failed to read systemd-boot version from {from:?}."))?;
-
-    // If the version cannot be read from the destination binary, it is malformed. It should be
-    // forcibly reinstalled.
-    let to_version = match SystemdVersion::from_systemd_boot_binary(to) {
-        Ok(version) => version,
-        _ => return Ok(true),
-    };
-
-    Ok(from_version > to_version)
-}
