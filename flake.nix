@@ -2,7 +2,7 @@
   description = "Secure Boot for NixOS";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixpkgs.url = "github:andre4ik3/nixpkgs/nixos-unstable";
 
     # Not used in the flake itself. Only used to make the source available for
     # the project.
