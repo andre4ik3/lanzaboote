@@ -20,6 +20,7 @@
           mkdir $out
           ${lib.getExe pkgs.openssl} genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out $out/private.pem
           ${lib.getExe pkgs.openssl} rsa -pubout -in $out/private.pem -out $out/public.pem
+          ${lib.getExe pkgs.openssl} req -x509 -new -key $out/private.pem -subj /CN=${name}/ -days 36500 -out $out/cert.pem
         '';
       keyPair = mkKeyPair "tpm2-pcr-key";
       keyPairInitrd = mkKeyPair "tpm2-pcr-initrd-key";
@@ -90,7 +91,14 @@
             "enter-initrd:leave-initrd:sysinit:ready"
           ];
         }
-        { privateKeyFile = privateKeyInitrdFile; }
+        # Signed through an OpenSSL provider, the path a key held by e.g. a TPM takes.
+        {
+          privateKeyFile = privateKeyInitrdFile;
+          privateKeySource = "provider:default";
+          certificateFile = "${keyPairInitrd}/cert.pem";
+        }
+        # Not generated yet: skipped with a warning instead of failing the install.
+        { privateKeyFile = "/nonexistent/tpm2-pcr-later-private-key.pem"; }
       ];
       environment.systemPackages = [ pkgs.cryptsetup ];
 

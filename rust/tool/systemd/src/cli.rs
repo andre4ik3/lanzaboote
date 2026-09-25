@@ -87,6 +87,8 @@ impl Cli {
     pub fn call(self, module: &str) {
         stderrlog::new()
             .module(module)
+            // Log messages from the shared library too (e.g. skipped PCR signing keys).
+            .module("lanzaboote_tool")
             .show_level(false)
             .quiet(self.quiet)
             .verbosity(DEFAULT_LOG_LEVEL + usize::from(self.verbose))
