@@ -13,12 +13,15 @@ tempfile = { workspace = true, features = ["default"]}
 sha2 = { workspace = true }
 
 base32ct = { version = "0.3.0", features = ["alloc"] }
-clap = { version = "4.5.51", features = ["derive"] }
+clap = { version = "4.5.51", features = ["derive", "env"] }
 indoc = "2.0.7"
 lanzaboote_tool = { path = "../shared" }
-nix = { version = "0.31.0", default-features = false, features = [ "fs" ] }
+nix = { version = "0.31.0", default-features = false, features = [ "fs", "ioctl" ] }
+libc = "0.2"
 regex = "1.12.2"
 stderrlog = "0.6.0"
+tss-esapi = { version = "=8.0.0-alpha.3", default-features = false }
+x509-cert = { version = "0.2", default-features = false, features = ["pem", "std"] }
 
 
 [dev-dependencies]

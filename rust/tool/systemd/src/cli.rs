@@ -4,9 +4,10 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use crate::install;
+use crate::tpm::{self, TpmCommand};
 use lanzaboote_tool::{
     architecture::Architecture,
-    signature::{EmptyKeyPair, LocalKeyPair},
+    signature::{DualSigner, EmptyKeyPair, LocalKeyPair},
 };
 
 /// The default log level.
@@ -28,7 +29,10 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    Install(InstallCommand),
+    Install(Box<InstallCommand>),
+    /// Provision Secure Boot keys held in the TPM
+    #[command(subcommand)]
+    Tpm(TpmCommand),
 }
 
 #[derive(Parser)]
@@ -76,6 +80,26 @@ struct InstallCommand {
     #[arg(long)]
     pcr_signature_config: Option<PathBuf>,
 
+    /// Move to the TPM Secure Boot keys in this `lzbt tpm` state directory: sign with both the
+    /// current key and its TPM db key, and stage the enrollment updates in `loader/keys/auto`.
+    /// Also read from the environment, so it reaches lzbt through the NixOS install hook.
+    #[arg(long, env = "LZBT_TRANSITION_DIR")]
+    transition_dir: Option<PathBuf>,
+
+    /// With --transition-dir: delete PK, KEK and db (signed with this key, which must be the
+    /// current PK's private key) so the next boot is in setup mode and enrolls the new keys.
+    #[arg(
+        long,
+        env = "LZBT_CLEAR_PK_KEY",
+        requires = "transition_dir",
+        requires = "clear_pk_certificate"
+    )]
+    clear_pk_key: Option<PathBuf>,
+
+    /// With --clear-pk-key: the current PK's certificate.
+    #[arg(long, env = "LZBT_CLEAR_PK_CERTIFICATE", requires = "clear_pk_key")]
+    clear_pk_certificate: Option<PathBuf>,
+
     /// EFI system partition mountpoint (e.g. efiSysMountPoint)
     esp: PathBuf,
 
@@ -105,7 +129,8 @@ impl Cli {
 impl Commands {
     pub fn call(self) -> Result<()> {
         match self {
-            Commands::Install(args) => install(args),
+            Commands::Install(args) => install(*args),
+            Commands::Tpm(command) => command.call(),
         }
     }
 }
@@ -117,6 +142,7 @@ fn install(args: InstallCommand) -> Result<()> {
     let public_key = &args.public_key.expect("Failed to obtain public key");
     let private_key = &args.private_key.expect("Failed to obtain private key");
 
+    let esp = args.esp.clone();
     let installer_builder = install::InstallerBuilder::new(
         lanzaboote_stub,
         args.pcr_signature_config,
@@ -137,6 +163,29 @@ fn install(args: InstallCommand) -> Result<()> {
         log::warn!("No keys provided. Installing unsigned artifacts.");
         let signer = EmptyKeyPair;
         installer_builder.build(signer).install()
+    } else if let Some(dir) = &args.transition_dir {
+        // Stage first: if that fails, nothing is signed with the TPM key yet.
+        tpm::stage(dir, &esp)?;
+        let current = LocalKeyPair::new(public_key, private_key, args.private_key_source);
+        let tpm_db = tpm::db_signer(dir)?;
+        installer_builder
+            // The TPM key first: after enrollment it is the only one trusted, and some firmware
+            // only checks the first signature. On such firmware the binaries stop booting
+            // under the current keys, which is why the keys are deleted right after (setup
+            // mode does not verify) and the next boot enrolls the staged keys.
+            .build(DualSigner {
+                first: tpm_db,
+                second: current,
+            })
+            .install()?;
+        match (&args.clear_pk_key, &args.clear_pk_certificate) {
+            (Some(key), Some(certificate)) => tpm::clear_keys(
+                key.to_str()
+                    .context("The PK key path must be valid UTF-8")?,
+                certificate,
+            ),
+            _ => Ok(()),
+        }
     } else {
         let signer = LocalKeyPair::new(public_key, private_key, args.private_key_source);
         installer_builder.build(signer).install()
