@@ -49,19 +49,21 @@ let
     in
     craneLib.buildPackage (
       argsWithArtifacts
+      // packageArgs
       // {
-        passthru.tests = {
-          clippy = craneLib.cargoClippy (
-            argsWithArtifacts
-            // {
-              cargoClippyExtraArgs = "-- --deny warnings";
-            }
-          );
+        passthru = packageArgs.passthru or { } // {
+          tests = {
+            clippy = craneLib.cargoClippy (
+              argsWithArtifacts
+              // {
+                cargoClippyExtraArgs = "-- --deny warnings";
+              }
+            );
 
-          rustfmt = craneLib.cargoFmt argsWithArtifacts;
+            rustfmt = craneLib.cargoFmt argsWithArtifacts;
+          };
         };
       }
-      // packageArgs
     )
   );
 in

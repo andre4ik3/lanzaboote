@@ -5,6 +5,7 @@
   binutils-unwrapped,
   openssl,
   sbsigntool,
+  openssl-tpm2-engine,
   pkg-config,
   tpm2-tss,
   systemd,
@@ -54,12 +55,16 @@ buildRustApp {
         path = lib.makeBinPath [
           binutils-unwrapped
           sbsigntool
+          # `lzbt tpm`: certificates, enrollment updates, and creating and approving TPM keys.
+          openssl
+          openssl-tpm2-engine
         ];
       in
       ''
         makeWrapper $out/bin/lzbt-systemd $out/bin/lzbt \
           --prefix PATH : ${path} \
-          --set LANZABOOTE_STUB ${stub}/bin/lanzaboote_stub.efi
+          --set LANZABOOTE_STUB ${stub}/bin/lanzaboote_stub.efi \
+          --set LZBT_TPM2_PROVIDER ${openssl-tpm2-engine}/lib/ossl-modules/tpm2.so
       '';
 
     meta.mainProgram = "lzbt";
