@@ -34,4 +34,5 @@ in
   systemd-measure = runTest ./lanzaboote/systemd-measure.nix;
   systemd-measured-uki = runTest ./lanzaboote/systemd-measured-uki.nix;
   systemd-cryptsetup-tpm2-signature = runTest ./lanzaboote/systemd-cryptsetup-tpm2-signature.nix;
+  tpm-keys = runTest ./lanzaboote/tpm-keys.nix;
 }
