@@ -121,20 +121,23 @@ pub fn lanzaboote_image(
     let kernel_hash_offs = initrd_hash_offs + file_size(&initrd_hash_file)?;
     let pcr_signature_offs = kernel_hash_offs + file_size(&kernel_hash_file)?;
 
-    let pcr_signature_section =
-        if let Some(pcr_signature_config_path) = &stub_parameters.pcr_signature_config_path {
-            let pcr_signature = create_pcr_signature(
-                &kernel_cmdline_file,
-                &stub_parameters.kernel_store_path,
-                &stub_parameters.initrd_store_path,
-                &os_release,
-                pcr_signature_config_path,
-            )?;
+    let pcr_signature = match &stub_parameters.pcr_signature_config_path {
+        Some(pcr_signature_config_path) => create_pcr_signature(
+            &kernel_cmdline_file,
+            &stub_parameters.kernel_store_path,
+            &stub_parameters.initrd_store_path,
+            &os_release,
+            pcr_signature_config_path,
+        )?,
+        None => None,
+    };
+    let pcr_signature_section = match pcr_signature {
+        Some(pcr_signature) => {
             let pcr_signature_file = tempdir.write_secure_file(&pcr_signature)?;
             Some(s(".pcrsig", pcr_signature_file, pcr_signature_offs))
-        } else {
-            None
-        };
+        }
+        None => None,
+    };
 
     let mut sections = vec![
         s(".osrel", os_release, os_release_offs),

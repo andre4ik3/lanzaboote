@@ -439,15 +439,37 @@ in
               privateKeyFile = lib.mkOption {
                 type = lib.types.path;
                 description = ''
-                  Private key to sign PCR policies.
+                  Private key to sign PCR policies: a PEM file, or a key reference understood by
+                  `privateKeySource`.
 
                   A key pair may be generated with `openssl` with the following commands:
                   ```bash
                   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out tpm2-pcr-private-key.pem
                   openssl rsa -pubout -in tpm2-pcr-private-key.pem -out tpm2-pcr-public-key.pem
                   ```
+
+                  If the file does not exist yet, its signature is skipped (with a warning), so the
+                  key can be generated after the first install. Nothing can be enrolled against a key
+                  that does not exist, so no unlock depends on the missing signature.
                 '';
                 example = "/etc/systemd/tpm2-pcr-private-key.pem";
+              };
+              privateKeySource = lib.mkOption {
+                type = lib.types.nullOr lib.types.str;
+                default = null;
+                example = "provider:tpm2";
+                description = ''
+                  Where `privateKeyFile` comes from, passed to `systemd-measure
+                  --private-key-source=`. Requires `certificateFile`.
+                '';
+              };
+              certificateFile = lib.mkOption {
+                type = lib.types.nullOr lib.types.path;
+                default = null;
+                description = ''
+                  Certificate for the signing key. Required with `privateKeySource`: `systemd-measure`
+                  cannot derive the public key from a key held by an engine or provider.
+                '';
               };
               phases = lib.mkOption {
                 type = lib.types.listOf lib.types.str;
@@ -502,6 +524,12 @@ in
             1. Include the Microsoft keys via autoEnrollKeys.includeMicrosoftKeys
             2. Accept the risk via autoEnrollKeys.allowBrickingMyMachine
         '';
+      }
+      {
+        assertion = lib.all (
+          entry: entry.privateKeySource != null -> entry.certificateFile != null
+        ) cfg.measuredBoot.pcrSignatures;
+        message = "boot.lanzaboote.measuredBoot.pcrSignatures: entries with privateKeySource need certificateFile.";
       }
       {
         assertion = cfg.measuredBoot.enable -> (configurationLimit > 0 && configurationLimit <= 8);

@@ -1,4 +1,4 @@
-use anyhow::{Context, Error, Result};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -8,9 +8,18 @@ use std::process::Command;
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct PcrSignatureConfigEntry {
-    /// Private key to sign the PCR policies
+    /// Private key to sign the PCR policies: a PEM file, or a key reference for
+    /// `private_key_source`.
     #[serde(alias = "privateKeyFile")]
     pub private_key: PathBuf,
+    /// Where the private key comes from, passed to `systemd-measure --private-key-source=`
+    /// (e.g. `provider:tpm2`). Requires `certificate`.
+    #[serde(default, alias = "privateKeySource")]
+    pub private_key_source: Option<String>,
+    /// Certificate for the private key. `systemd-measure` requires one when the key comes from
+    /// an engine or provider.
+    #[serde(default, alias = "certificateFile")]
+    pub certificate: Option<PathBuf>,
     /// Boot phase paths separated by colons (e.g. `enter-initrd`, `enter-initrd:leave-initrd`) to sign a policy for.
     /// If empty, defaults to default phases of `systemd-measure(1)`.
     #[serde(default)]
@@ -61,18 +70,32 @@ fn combine_pcr_policy_signatures(
 }
 
 /// Create a PCR policy signature using `systemd-measure sign` from the PE section files and section data files
+///
+/// Returns `None` when no configured key exists yet.
 pub fn create_pcr_signature(
     kernel_cmdline_path: &Path,
     kernel_path: &Path,
     initrd_path: &Path,
     os_release_path: &Path,
     pcr_signature_config_path: &Path,
-) -> Result<Vec<u8>> {
+) -> Result<Option<Vec<u8>>> {
     let pcr_signature_config = load_pcr_signature_config(pcr_signature_config_path)?;
 
     let mut pcr_policy_signatures = Vec::new();
 
     for pcr_signature_config_entry in pcr_signature_config {
+        // A key that does not exist yet (e.g. generated on first boot) cannot have anything enrolled
+        // against it, so a missing signature for it cannot break an unlock.
+        if pcr_signature_config_entry.private_key_source.is_none()
+            && !pcr_signature_config_entry.private_key.exists()
+        {
+            log::warn!(
+                "PCR signing key {} does not exist, skipping its signature.",
+                pcr_signature_config_entry.private_key.display()
+            );
+            continue;
+        }
+
         let mut args = vec![
             OsString::from("sign"),
             OsString::from("--json=short"),
@@ -88,6 +111,16 @@ pub fn create_pcr_signature(
             pcr_signature_config_entry.private_key.into(),
         ];
 
+        if let Some(source) = pcr_signature_config_entry.private_key_source {
+            args.push(OsString::from("--private-key-source"));
+            args.push(source.into());
+        }
+
+        if let Some(certificate) = pcr_signature_config_entry.certificate {
+            args.push(OsString::from("--certificate"));
+            args.push(certificate.into());
+        }
+
         for phase in pcr_signature_config_entry.phases {
             args.push(OsString::from("--phase"));
             args.push(phase.into());
@@ -99,9 +132,17 @@ pub fn create_pcr_signature(
         }
 
         let command = Command::new("systemd-measure")
-            .args(args)
+            .args(&args)
             .output()
             .context("Failed to run systemd-measure. Maybe, the binary is not in PATH")?;
+
+        if !command.status.success() {
+            log::debug!("systemd-measure failed with args: `{args:?}`.");
+            return Err(anyhow::anyhow!(
+                "systemd-measure failed to sign a PCR policy: {}",
+                String::from_utf8_lossy(&command.stderr).trim()
+            ));
+        }
 
         pcr_policy_signatures.push(
             serde_json::from_slice::<PcrPolicySignature>(&command.stdout)
@@ -109,13 +150,12 @@ pub fn create_pcr_signature(
         );
     }
 
-    if !pcr_policy_signatures.is_empty() {
-        let pcr_policy_signature = combine_pcr_policy_signatures(pcr_policy_signatures);
-        Ok(
-            serde_json::to_vec(&pcr_policy_signature)
-                .context("Failed to serialize PCR policy signature")?,
-        )
-    } else {
-        Err(anyhow::anyhow!("PCR signature config is empty"))
+    if pcr_policy_signatures.is_empty() {
+        return Ok(None);
     }
+    let pcr_policy_signature = combine_pcr_policy_signatures(pcr_policy_signatures);
+    Ok(Some(
+        serde_json::to_vec(&pcr_policy_signature)
+            .context("Failed to serialize PCR policy signature")?,
+    ))
 }
