@@ -450,8 +450,10 @@ impl<S: Signer> Installer<S> {
             .sign_store_path(&systemd_boot)
             .with_context(|| format!("Failed to sign {systemd_boot:?}"))?;
 
-        let version = SystemdVersion::from_systemd_boot_binary(&systemd_boot)
-            .with_context(|| format!("Failed to read systemd-boot version from {systemd_boot:?}."))?;
+        let version =
+            SystemdVersion::from_systemd_boot_binary(&systemd_boot).with_context(|| {
+                format!("Failed to read systemd-boot version from {systemd_boot:?}.")
+            })?;
         let outdated = [&self.esp_paths.efi_fallback, &self.esp_paths.systemd_boot]
             .into_iter()
             .filter(|to| fs::read(to).map_or(true, |current| current != signed))
@@ -459,7 +461,8 @@ impl<S: Signer> Installer<S> {
             // `bootctl update`). An unreadable version means the binary is malformed and gets
             // replaced.
             .any(|to| {
-                SystemdVersion::from_systemd_boot_binary(to).map_or(true, |current| current <= version)
+                SystemdVersion::from_systemd_boot_binary(to)
+                    .map_or(true, |current| current <= version)
             });
 
         // If Measured Boot is not enabled (i.e. `pcrlock_paths` is `None`), this should be true.
@@ -520,7 +523,7 @@ impl<S: Signer> Installer<S> {
         .with_context(|| {
             format!(
                 "Failed to install systemd-boot loader.conf to {:?}",
-                &self.esp_paths.systemd_boot_loader_config
+                self.esp_paths.systemd_boot_loader_config
             )
         })?;
 
@@ -694,4 +697,3 @@ fn ensure_parent_dir(path: &Path) {
         fs::create_dir_all(parent).ok();
     }
 }
-

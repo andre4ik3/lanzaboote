@@ -249,9 +249,9 @@ pub fn remove_signature(path: &Path) -> Result<()> {
     };
     let pe_offset = pe.header.dos_header.pe_pointer as usize;
     let optional_header_offset = pe_offset + 4 + goblin::pe::header::SIZEOF_COFF_HEADER;
-    let data_directories_offset = optional_header_offset
-        + if pe.is_64 { 112 } else { 96 };
-    let certificate_table_entry = data_directories_offset + 4 * goblin::pe::data_directories::SIZEOF_DATA_DIRECTORY;
+    let data_directories_offset = optional_header_offset + if pe.is_64 { 112 } else { 96 };
+    let certificate_table_entry =
+        data_directories_offset + 4 * goblin::pe::data_directories::SIZEOF_DATA_DIRECTORY;
     data[certificate_table_entry..certificate_table_entry + 8].fill(0);
     data.truncate(table.virtual_address as usize);
     fs::write(path, data)?;
@@ -281,7 +281,13 @@ pub fn verify_signature(path: &Path) -> Result<bool> {
         .context("Failed to run openssl. Most likely, the binary is not on PATH.")?;
     let signer = String::from_utf8(output.stdout)?;
     let expected = std::process::Command::new("openssl")
-        .args(["x509", "-noout", "-subject", "-in", "tests/fixtures/uefi-keys/db.pem"])
+        .args([
+            "x509",
+            "-noout",
+            "-subject",
+            "-in",
+            "tests/fixtures/uefi-keys/db.pem",
+        ])
         .output()?;
     let expected = String::from_utf8(expected.stdout)?;
     Ok(output.status.success() && signer.contains(expected.trim()))

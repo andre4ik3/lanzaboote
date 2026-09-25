@@ -178,7 +178,7 @@ fn wrap_in_pe(stub: &Path, sections: Vec<Section>, output: &Path) -> Result<()> 
     if !status.success() {
         return Err(anyhow::anyhow!(
             "Failed to wrap in pe with args `{:?}`",
-            &args
+            args
         ));
     }
 
@@ -223,7 +223,7 @@ fn esp_relative_uefi_path(esp: &Path, path: &Path) -> Result<String> {
         .strip_prefix(esp)
         .with_context(|| format!("Failed to strip esp prefix: {:?} from: {:?}", esp, path))?;
     let uefi_path = uefi_path(relative_path)?;
-    Ok(format!("\\{}", &uefi_path))
+    Ok(format!("\\{}", uefi_path))
 }
 
 /// Convert a path to a UEFI string representation.

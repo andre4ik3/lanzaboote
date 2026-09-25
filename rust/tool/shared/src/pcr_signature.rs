@@ -51,9 +51,7 @@ pub struct PcrPolicySignatureEntry {
 type PcrPolicySignature = HashMap<String, Vec<PcrPolicySignatureEntry>>;
 
 /// Combine multiple PCR policy signatures into one (and remove duplicates)
-fn combine_pcr_policy_signatures(
-    policy_signatures: Vec<PcrPolicySignature>,
-) -> PcrPolicySignature {
+fn combine_pcr_policy_signatures(policy_signatures: Vec<PcrPolicySignature>) -> PcrPolicySignature {
     let mut result = PcrPolicySignature::new();
 
     for policy_signature in policy_signatures {
