@@ -13,7 +13,7 @@ tempfile = { workspace = true, features = ["default"]}
 sha2 = { workspace = true }
 
 base32ct = { version = "0.3.0", features = ["alloc"] }
-clap = { version = "4.5.51", features = ["derive"] }
+clap = { version = "4.5.51", features = ["derive", "env"] }
 indoc = "2.0.7"
 lanzaboote_tool = { path = "../shared" }
 nix = { version = "0.31.0", default-features = false, features = [ "fs" ] }
