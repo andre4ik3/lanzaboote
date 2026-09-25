@@ -5,6 +5,7 @@ pub mod esp;
 pub mod gc;
 pub mod generation;
 pub mod os_release;
+pub mod pcr7;
 pub mod pcr_signature;
 pub mod pe;
 pub mod signature;
