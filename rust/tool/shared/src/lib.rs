@@ -1,4 +1,5 @@
 pub mod architecture;
+pub mod der;
 pub mod esp;
 pub mod gc;
 pub mod generation;
