@@ -18,6 +18,8 @@ buildRustApp {
     # Test fixtures
     ".pem"
     ".key"
+    ".esl"
+    ".hex"
   ];
   packageArgs = {
     nativeBuildInputs = [
