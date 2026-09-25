@@ -1,3 +1,4 @@
+mod dual;
 mod empty;
 mod local;
 
@@ -6,6 +7,7 @@ use std::path::Path;
 
 use crate::pe::StubParameters;
 
+pub use dual::DualSigner;
 pub use empty::EmptyKeyPair;
 pub use local::LocalKeyPair;
 
