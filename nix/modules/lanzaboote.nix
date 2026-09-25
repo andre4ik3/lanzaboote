@@ -166,7 +166,9 @@ in
         editor = config.boot.loader.systemd-boot.editor;
         default = "nixos-*";
       }
-      // lib.optionalAttrs cfg.autoEnrollKeys.enable { secure-boot-enroll = "force"; };
+      // lib.optionalAttrs (cfg.autoEnrollKeys.enable || cfg.tpm.enable) {
+        secure-boot-enroll = "force";
+      };
 
       defaultText = ''
         {
@@ -175,7 +177,7 @@ in
           editor = config.boot.loader.systemd-boot.editor;
           default = "nixos-*";
         }
-        // lib.optionalAttrs config.boot.lanzaboote.autoEnrollKeys.enable {
+        // lib.optionalAttrs (config.boot.lanzaboote.autoEnrollKeys.enable || config.boot.lanzaboote.tpm.enable) {
           secure-boot-enroll = "force";
         };
       '';
@@ -279,6 +281,24 @@ in
       '';
       default = cfg.autoGenerateKeys.enable;
       defaultText = "config.boot.lanzaboote.autoGenerateKeys.enable";
+    };
+
+    tpm = {
+      enable = lib.mkEnableOption ''
+        signing with a db key held in the TPM, provisioned with `lzbt tpm`. The key is
+        usable only in the PCR 7 states its approver signed. systemd-boot enrolls the keys
+        `lzbt install --transition-dir` staged in `loader/keys/auto`
+      '';
+
+      stateDirectory = lib.mkOption {
+        type = lib.types.externalPath;
+        default = "${cfg.pkiBundle}/tpm";
+        defaultText = "\${config.boot.lanzaboote.pkiBundle}/tpm";
+        description = ''
+          The `lzbt tpm` state directory holding the TPM key files, certificates and
+          enrollment updates.
+        '';
+      };
     };
 
     autoGenerateKeys = {
@@ -526,6 +546,10 @@ in
         '';
       }
       {
+        assertion = cfg.tpm.enable -> !cfg.autoGenerateKeys.enable && !cfg.autoEnrollKeys.enable;
+        message = "boot.lanzaboote.tpm.enable replaces the generated file keys and their enrollment; disable autoGenerateKeys and autoEnrollKeys.";
+      }
+      {
         assertion = lib.all (
           entry: entry.privateKeySource != null -> entry.certificateFile != null
         ) cfg.measuredBoot.pcrSignatures;
@@ -559,6 +583,19 @@ in
       ]
       ++ lib.optionals (pcr 4) [ "350-action-efi-application.pcrlock" ]
       ++ lib.optionals (pcr 7) [ "400-secureboot-separator.pcrlock.d/300-0x00000000.pcrlock" ];
+
+    boot.lanzaboote.publicKeyFile = lib.mkIf cfg.tpm.enable (
+      lib.mkDefault "${cfg.tpm.stateDirectory}/db.crt"
+    );
+    boot.lanzaboote.privateKeyFile = lib.mkIf cfg.tpm.enable (
+      lib.mkDefault "${cfg.tpm.stateDirectory}/db.key"
+    );
+    boot.lanzaboote.privateKeySource = lib.mkIf cfg.tpm.enable (
+      lib.mkDefault "provider:${cfg.package.tpm2Provider}"
+    );
+
+    # `lzbt tpm` for provisioning and approvals.
+    environment.systemPackages = lib.mkIf cfg.tpm.enable [ cfg.package ];
 
     environment.etc."sbctl/sbctl.conf" = lib.mkIf (
       cfg.autoGenerateKeys.enable || cfg.autoEnrollKeys.enable
