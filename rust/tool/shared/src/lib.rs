@@ -9,4 +9,5 @@ pub mod pcr7;
 pub mod pcr_signature;
 pub mod pe;
 pub mod signature;
+pub mod tpm_key;
 pub mod utils;
