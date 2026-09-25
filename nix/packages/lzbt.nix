@@ -5,6 +5,8 @@
   binutils-unwrapped,
   openssl,
   sbsigntool,
+  pkg-config,
+  tpm2-tss,
   systemd,
   stub,
 }:
@@ -20,10 +22,17 @@ buildRustApp {
     ".key"
     ".esl"
     ".hex"
+    ".pub"
   ];
+  # tss-esapi links tpm2-tss (the TPM clock, and parsing key files).
+  args = {
+    nativeBuildInputs = [ pkg-config ];
+    buildInputs = [ tpm2-tss ];
+  };
   packageArgs = {
     nativeBuildInputs = [
       makeBinaryWrapper
+      pkg-config
     ];
 
     nativeCheckInputs = [

@@ -1,0 +1,3 @@
+[files]
+# Base64 key material.
+extend-exclude = ["rust/tool/shared/tests/fixtures/tss2/*"]
