@@ -21,4 +21,6 @@ serde = { version = "1.0.228", features = ["derive"] }
 time = "0.3"
 cms = "0.2"
 x509-cert = { version = "0.2", default-features = false, features = ["pem", "std"] }
+uuid = { version = "1", default-features = false, features = ["std", "v4"] }
+const-oid = { version = "0.9", features = ["db"] }
 walkdir = "2"
