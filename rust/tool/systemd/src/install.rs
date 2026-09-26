@@ -518,7 +518,7 @@ impl<S: Signer> Installer<S> {
         .with_context(|| {
             format!(
                 "Failed to install systemd-boot loader.conf to {:?}",
-                &self.esp_paths.systemd_boot_loader_config
+                self.esp_paths.systemd_boot_loader_config
             )
         })?;
 

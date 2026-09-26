@@ -1,4 +1,4 @@
-use anyhow::{Context, Error, Result};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -42,9 +42,7 @@ pub struct PcrPolicySignatureEntry {
 type PcrPolicySignature = HashMap<String, Vec<PcrPolicySignatureEntry>>;
 
 /// Combine multiple PCR policy signatures into one (and remove duplicates)
-fn combine_pcr_policy_signatures(
-    policy_signatures: Vec<PcrPolicySignature>,
-) -> PcrPolicySignature {
+fn combine_pcr_policy_signatures(policy_signatures: Vec<PcrPolicySignature>) -> PcrPolicySignature {
     let mut result = PcrPolicySignature::new();
 
     for policy_signature in policy_signatures {
@@ -111,10 +109,8 @@ pub fn create_pcr_signature(
 
     if !pcr_policy_signatures.is_empty() {
         let pcr_policy_signature = combine_pcr_policy_signatures(pcr_policy_signatures);
-        Ok(
-            serde_json::to_vec(&pcr_policy_signature)
-                .context("Failed to serialize PCR policy signature")?,
-        )
+        Ok(serde_json::to_vec(&pcr_policy_signature)
+            .context("Failed to serialize PCR policy signature")?)
     } else {
         Err(anyhow::anyhow!("PCR signature config is empty"))
     }
