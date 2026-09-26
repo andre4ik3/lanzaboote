@@ -238,11 +238,10 @@ impl fmt::Display for OsRelease {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CStr;
 
     #[test]
     fn parses_correctly_from_str() -> Result<()> {
-        let os_release_cstr = CStr::from_bytes_with_nul(b"ID=systemd-boot\nVERSION=\"252.1\"\n\0")?;
+        let os_release_cstr = c"ID=systemd-boot\nVERSION=\"252.1\"\n";
         let os_release_str = os_release_cstr.to_str()?;
         let os_release = OsRelease::from_str(os_release_str)?;
 

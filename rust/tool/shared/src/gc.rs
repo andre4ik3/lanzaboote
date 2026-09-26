@@ -187,7 +187,7 @@ mod tests {
         roots.collect_garbage_with_filter(&rootdir, |p| {
             p.file_name()
                 .and_then(|n| n.to_str())
-                .map_or(false, |n| n.starts_with("prefix_"))
+                .is_some_and(|n| n.starts_with("prefix_"))
         })?;
 
         assert!(unused_file.exists());
