@@ -26,7 +26,7 @@ use cms::content_info::ContentInfo;
 use cms::signed_data::SignedData;
 use x509_cert::der::{Decode, Encode};
 
-use super::Guid;
+use super::{Guid, guid};
 
 /// `EFI_VARIABLE_NON_VOLATILE | BOOTSERVICE_ACCESS | RUNTIME_ACCESS |
 /// TIME_BASED_AUTHENTICATED_WRITE_ACCESS`
@@ -56,8 +56,8 @@ impl SecureBootVariable {
 
     pub fn vendor(self) -> Guid {
         match self {
-            Self::Pk | Self::Kek => Guid::GLOBAL_VARIABLE,
-            Self::Db | Self::Dbx => Guid::IMAGE_SECURITY_DATABASE,
+            Self::Pk | Self::Kek => guid::GLOBAL_VARIABLE,
+            Self::Db | Self::Dbx => guid::IMAGE_SECURITY_DATABASE,
         }
     }
 }
@@ -90,7 +90,7 @@ pub fn signed_payload(variable: SecureBootVariable, timestamp: &[u8; 16], data: 
         .collect();
     [
         &name[..],
-        &variable.vendor().0,
+        &variable.vendor().to_bytes(),
         &SECURE_BOOT_VARIABLE_ATTRIBUTES.to_le_bytes(),
         timestamp,
         data,
@@ -106,7 +106,7 @@ pub fn assemble(timestamp: &[u8; 16], signed_data: &[u8], data: &[u8]) -> Result
     out.extend_from_slice(&length.to_le_bytes());
     out.extend_from_slice(&WIN_CERT_REVISION.to_le_bytes());
     out.extend_from_slice(&WIN_CERT_TYPE_EFI_GUID.to_le_bytes());
-    out.extend_from_slice(&Guid::CERT_TYPE_PKCS7.0);
+    out.extend_from_slice(&guid::CERT_TYPE_PKCS7.to_bytes());
     out.extend_from_slice(signed_data);
     out.extend_from_slice(data);
     Ok(out)
@@ -209,7 +209,7 @@ mod tests {
         let payload = signed_payload(SecureBootVariable::Db, &ts, b"DATA");
         // "db" as UTF-16LE, no terminator
         assert_eq!(&payload[..4], b"d\0b\0");
-        assert_eq!(&payload[4..20], &Guid::IMAGE_SECURITY_DATABASE.0);
+        assert_eq!(&payload[4..20], &guid::IMAGE_SECURITY_DATABASE.to_bytes());
         assert_eq!(&payload[20..24], &[0x27, 0, 0, 0]);
         assert_eq!(&payload[24..40], &ts);
         assert_eq!(&payload[40..], b"DATA");
@@ -221,7 +221,7 @@ mod tests {
         assert_eq!(u32::from_le_bytes(update[16..20].try_into().unwrap()), 26);
         assert_eq!(&update[20..22], &[0x00, 0x02]);
         assert_eq!(&update[22..24], &[0xf1, 0x0e]);
-        assert_eq!(&update[24..40], &Guid::CERT_TYPE_PKCS7.0);
+        assert_eq!(&update[24..40], &guid::CERT_TYPE_PKCS7.to_bytes());
         assert_eq!(data_of(&update).unwrap(), b"payload");
     }
 
