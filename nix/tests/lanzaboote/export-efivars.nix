@@ -12,6 +12,8 @@ in
 
   nodes.machine = {
     imports = [ ./common/lanzaboote.nix ];
+    # It rewrites the seed file from userspace on every boot: without it, only the stub does.
+    systemd.suppressedSystemUnits = [ "systemd-boot-random-seed.service" ];
   };
 
   testScript =
@@ -72,7 +74,20 @@ in
       assert_variable_string_contains("LoaderFirmwareInfo", "EDK II")
       assert_variable_string_contains("LoaderFirmwareType", "UEFI")
 
-      with subtest("Is `StubFeatures` non-zero"):
-          assert struct.unpack('<Q', read_raw_variable("StubFeatures")) != 0
+      with subtest("`StubFeatures` lists what the stub does"):
+          # Boot partition, credentials, sysexts, three PCRs, random seed.
+          (features,) = struct.unpack('<Q', read_raw_variable("StubFeatures"))
+          t.assertEqual(features, 0b11111)
+
+      with subtest("Without systemd-boot, the stub passes a random seed on"):
+          # The stub rewrites the seed file before it hands the kernel a seed derived from it,
+          # so a new file on every boot shows it got that far. (Nothing else writes it here.)
+          machine.succeed("test $(stat -c %s /boot/loader/random-seed) -ge 32")
+          before = machine.succeed("sha256sum /boot/loader/random-seed")
+          machine.succeed("sync")
+          machine.crash()
+          machine.start()
+          machine.wait_for_unit("multi-user.target")
+          t.assertNotEqual(machine.succeed("sha256sum /boot/loader/random-seed"), before, "a new seed on every boot")
     '';
 }

@@ -7,6 +7,7 @@ extern crate alloc;
 mod common;
 mod thin;
 
+use crate::common::get_secure_boot_status;
 use crate::thin::UkiComponents;
 use alloc::vec::Vec;
 use linux_bootloader::companions::{
@@ -14,6 +15,7 @@ use linux_bootloader::companions::{
 };
 use linux_bootloader::efivars::{EfiLoaderFeatures, export_efi_variables, get_loader_features};
 use linux_bootloader::measure::{measure_companion_initrds, measure_image};
+use linux_bootloader::random_seed;
 use linux_bootloader::tpm::tpm_available;
 use linux_bootloader::uefi_helpers::booted_image_file;
 use log::{info, warn};
@@ -64,13 +66,6 @@ fn main() -> Status {
         );
     }
 
-    if let Ok(features) = get_loader_features()
-        && !features.contains(EfiLoaderFeatures::RandomSeed)
-    {
-        // FIXME: process random seed then on the disk.
-        info!("Random seed is available, but lanzaboote does not support it yet.");
-    }
-
     if export_efi_variables(STUB_NAME).is_err() {
         warn!(
             "Failed to export stub EFI variables, some features related to measured boot will not be available"
@@ -90,6 +85,14 @@ fn main() -> Status {
 
         if let Ok(image_fs) = image_fs {
             let mut filesystem = uefi::fs::FileSystem::new(image_fs);
+
+            // systemd-boot already passed a seed on, if it booted us: don't use the file twice.
+            if !get_loader_features()
+                .is_ok_and(|features| features.contains(EfiLoaderFeatures::RandomSeed))
+                && let Err(err) = random_seed::process(&mut filesystem, get_secure_boot_status())
+            {
+                info!("Not passing a random seed to the kernel: {err}");
+            }
             let default_dropin_directory;
 
             if let Some(loaded_image_path) = pe_in_memory.file_path() {
