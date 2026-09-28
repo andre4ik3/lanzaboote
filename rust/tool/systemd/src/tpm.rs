@@ -26,7 +26,7 @@ use anyhow::{Context, Result, bail, ensure};
 use clap::{Parser, Subcommand};
 
 use lanzaboote_tool::efi::auth::{self, SecureBootVariable};
-use lanzaboote_tool::efi::{Guid, SignatureList};
+use lanzaboote_tool::efi::{Guid, SignatureList, guid};
 use lanzaboote_tool::pcr7::{self, SecureBootState};
 use lanzaboote_tool::signature::LocalKeyPair;
 use lanzaboote_tool::tpm_key::{self, KeyFile, Policy};
@@ -188,7 +188,7 @@ fn init(state: &State) -> Result<()> {
     }
 
     // dbx is not replaced by enrollment, so it stays part of the PCR 7 state.
-    let dbx = read_efivar("dbx", Guid::IMAGE_SECURITY_DATABASE)?.unwrap_or_default();
+    let dbx = read_efivar("dbx", guid::IMAGE_SECURITY_DATABASE)?.unwrap_or_default();
     state.write("dbx.esl", dbx)?;
     state.write("pcr7.current", hex(&read_pcr(7)?))?;
     let pcr15 = read_pcr(15)?;
@@ -235,7 +235,7 @@ fn authorize(args: AuthorizeCommand) -> Result<()> {
     let owner = match args.owner {
         Some(owner) => owner,
         None if state.path("owner.guid").exists() => state.read_string("owner.guid")?.parse()?,
-        None => Guid::new_random(),
+        None => guid::random(),
     };
     state.write("owner.guid", owner.to_string())?;
 

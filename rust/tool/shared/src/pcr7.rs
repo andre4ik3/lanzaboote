@@ -16,7 +16,7 @@
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 
-use crate::efi::{Guid, SignatureList, signature_list::find_certificate};
+use crate::efi::{Guid, SignatureList, guid, signature_list::find_certificate};
 
 /// The contents of the Secure Boot variables, as enrolled (without efivarfs attribute bytes).
 pub struct SecureBootState<'a> {
@@ -31,7 +31,7 @@ fn variable_event(name: &str, vendor: Guid, data: &[u8]) -> Vec<u8> {
     let name_len = name.encode_utf16().count() as u64;
     let name: Vec<u8> = name.encode_utf16().flat_map(u16::to_le_bytes).collect();
     [
-        &vendor.0[..],
+        &vendor.to_bytes()[..],
         &name_len.to_le_bytes(),
         &(data.len() as u64).to_le_bytes(),
         &name,
@@ -49,14 +49,14 @@ pub fn predict(state: &SecureBootState, authority: &[u8]) -> Result<[u8; 32]> {
         .to_bytes();
 
     let events = [
-        variable_event("SecureBoot", Guid::GLOBAL_VARIABLE, &[1]),
-        variable_event("PK", Guid::GLOBAL_VARIABLE, state.pk),
-        variable_event("KEK", Guid::GLOBAL_VARIABLE, state.kek),
-        variable_event("db", Guid::IMAGE_SECURITY_DATABASE, state.db),
-        variable_event("dbx", Guid::IMAGE_SECURITY_DATABASE, state.dbx),
+        variable_event("SecureBoot", guid::GLOBAL_VARIABLE, &[1]),
+        variable_event("PK", guid::GLOBAL_VARIABLE, state.pk),
+        variable_event("KEK", guid::GLOBAL_VARIABLE, state.kek),
+        variable_event("db", guid::IMAGE_SECURITY_DATABASE, state.db),
+        variable_event("dbx", guid::IMAGE_SECURITY_DATABASE, state.dbx),
         // EV_SEPARATOR for a successful boot.
         0u32.to_le_bytes().to_vec(),
-        variable_event("db", Guid::IMAGE_SECURITY_DATABASE, &authority),
+        variable_event("db", guid::IMAGE_SECURITY_DATABASE, &authority),
     ];
 
     let mut pcr = [0u8; 32];
@@ -125,7 +125,7 @@ mod tests {
 
     #[test]
     fn requires_the_authority_to_be_in_db() {
-        let db = SignatureList::x509(Guid::GLOBAL_VARIABLE, vec![1; 8])
+        let db = SignatureList::x509(guid::GLOBAL_VARIABLE, vec![1; 8])
             .to_bytes()
             .unwrap();
         let state = SecureBootState {

@@ -16,7 +16,7 @@
 
 use anyhow::{Context, Result, bail, ensure};
 
-use super::Guid;
+use super::{Guid, guid};
 
 const LIST_HEADER_SIZE: usize = 28;
 const OWNER_SIZE: usize = 16;
@@ -32,7 +32,7 @@ impl SignatureData {
     /// The entry as it is laid out in a list, and as firmware measures it into PCR 7 when it
     /// authorizes a boot binary (`EV_EFI_VARIABLE_AUTHORITY`).
     pub fn to_bytes(&self) -> Vec<u8> {
-        [&self.owner.0[..], &self.data].concat()
+        [&self.owner.to_bytes()[..], &self.data].concat()
     }
 }
 
@@ -47,7 +47,7 @@ impl SignatureList {
     /// A list with a single X.509 certificate (DER), as used for `PK`, `KEK` and `db` entries.
     pub fn x509(owner: Guid, certificate_der: Vec<u8>) -> Self {
         SignatureList {
-            signature_type: Guid::CERT_X509,
+            signature_type: guid::CERT_X509,
             entries: vec![SignatureData {
                 owner,
                 data: certificate_der,
@@ -68,7 +68,7 @@ impl SignatureList {
         );
         let list_size = LIST_HEADER_SIZE + entry_size * self.entries.len();
         let mut out = Vec::with_capacity(list_size);
-        out.extend_from_slice(&self.signature_type.0);
+        out.extend_from_slice(&self.signature_type.to_bytes());
         out.extend_from_slice(&u32::try_from(list_size)?.to_le_bytes());
         out.extend_from_slice(&0u32.to_le_bytes());
         out.extend_from_slice(&u32::try_from(entry_size)?.to_le_bytes());
@@ -86,7 +86,7 @@ impl SignatureList {
                 data.len() >= LIST_HEADER_SIZE,
                 "Truncated signature list header"
             );
-            let signature_type = Guid::from_bytes(&data[..16])?;
+            let signature_type = Guid::from_bytes(data[..16].try_into().expect("16 bytes"));
             let u32_at = |offset: usize| {
                 u32::from_le_bytes(data[offset..offset + 4].try_into().expect("4 bytes")) as usize
             };
@@ -108,7 +108,7 @@ impl SignatureList {
                 .chunks(entry_size)
                 .map(|entry| {
                     Ok(SignatureData {
-                        owner: Guid::from_bytes(&entry[..OWNER_SIZE])?,
+                        owner: Guid::from_bytes(entry[..OWNER_SIZE].try_into().expect("16 bytes")),
                         data: entry[OWNER_SIZE..].to_vec(),
                     })
                 })
@@ -131,7 +131,7 @@ pub fn find_certificate<'a>(
 ) -> Option<&'a SignatureData> {
     lists
         .iter()
-        .filter(|list| list.signature_type == Guid::CERT_X509)
+        .filter(|list| list.signature_type == guid::CERT_X509)
         .flat_map(|list| &list.entries)
         .find(|entry| entry.data == certificate_der)
 }
@@ -149,18 +149,18 @@ mod tests {
         let list = SignatureList::x509(owner(), vec![0xaa; 5]);
         let bytes = list.to_bytes().unwrap();
         assert_eq!(bytes.len(), 28 + 16 + 5);
-        assert_eq!(&bytes[..16], &Guid::CERT_X509.0);
+        assert_eq!(&bytes[..16], &guid::CERT_X509.to_bytes());
         assert_eq!(u32::from_le_bytes(bytes[16..20].try_into().unwrap()), 49);
         assert_eq!(u32::from_le_bytes(bytes[20..24].try_into().unwrap()), 0);
         assert_eq!(u32::from_le_bytes(bytes[24..28].try_into().unwrap()), 21);
-        assert_eq!(&bytes[28..44], &owner().0);
+        assert_eq!(&bytes[28..44], &owner().to_bytes());
         assert_eq!(&bytes[44..], &[0xaa; 5]);
     }
 
     #[test]
     fn parses_concatenated_lists_of_different_sizes() {
         let a = SignatureList::x509(owner(), vec![1; 3]);
-        let b = SignatureList::x509(Guid::GLOBAL_VARIABLE, vec![2; 7]);
+        let b = SignatureList::x509(guid::GLOBAL_VARIABLE, vec![2; 7]);
         let bytes = [a.to_bytes().unwrap(), b.to_bytes().unwrap()].concat();
         assert_eq!(SignatureList::parse_all(&bytes).unwrap(), vec![a, b]);
         assert!(SignatureList::parse_all(&[]).unwrap().is_empty());
@@ -170,7 +170,7 @@ mod tests {
     fn finds_a_certificate_among_several() {
         let ours = vec![9; 4];
         let lists = vec![
-            SignatureList::x509(Guid::GLOBAL_VARIABLE, vec![1; 4]),
+            SignatureList::x509(guid::GLOBAL_VARIABLE, vec![1; 4]),
             SignatureList::x509(owner(), ours.clone()),
         ];
         let entry = find_certificate(&lists, &ours).unwrap();

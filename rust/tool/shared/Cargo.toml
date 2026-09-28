@@ -21,7 +21,9 @@ serde = { version = "1.0.228", features = ["derive"] }
 time = "0.3"
 cms = "0.2"
 x509-cert = { version = "0.2", default-features = false, features = ["pem", "std"] }
-uuid = { version = "1", default-features = false, features = ["std", "v4"] }
+uguid = "2.2"
+# Random signature owner GUIDs.
+getrandom = "0.4"
 const-oid = { version = "0.9", features = ["db"] }
 tss-esapi = { version = "=8.0.0-alpha.3", default-features = false, features = ["abstraction", "rsa"] }
 walkdir = "2"
