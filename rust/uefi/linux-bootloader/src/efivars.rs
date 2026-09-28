@@ -1,7 +1,7 @@
 use alloc::{format, string::ToString, vec::Vec};
 use core::mem::size_of;
 use uefi::{
-    CStr16, Guid, Handle, Result, Status, boot, cstr16, guid,
+    CStr16, Guid, Handle, Result, boot, cstr16, guid,
     proto::{
         device_path::{
             DevicePath, DeviceSubType, DeviceType,
@@ -112,34 +112,6 @@ bitflags! {
     }
 }
 
-// This won't work on a big endian system.
-// But okay, we do not really care, do we?
-#[cfg(target_endian = "little")]
-pub fn from_u16(from: &[u16]) -> &[u8] {
-    unsafe {
-        core::slice::from_raw_parts(from.as_ptr() as *mut u8, from.len().checked_mul(2).unwrap())
-    }
-}
-
-// Remove me when https://github.com/rust-osdev/uefi-rs/pull/788 lands
-pub fn cstr16_to_bytes(s: &CStr16) -> &[u8] {
-    from_u16(s.to_u16_slice_with_nul())
-}
-
-// TODO: after upgrading to uefi-0.32, this can be replaced with
-// `runtime::variable_exists`.
-fn variable_exists(name: &CStr16, vendor: &VariableVendor) -> Result<bool> {
-    let mut data = [0];
-    match runtime::get_variable(name, vendor, &mut data) {
-        Ok(_) => Ok(true),
-        Err(err) => match err.status() {
-            Status::BUFFER_TOO_SMALL => Ok(true),
-            Status::NOT_FOUND => Ok(false),
-            _ => Err(err.status().into()),
-        },
-    }
-}
-
 /// Ensures that an UEFI variable is set or set it with a fallback value
 /// computed in a lazy way.
 pub fn ensure_efi_variable<F>(
@@ -152,7 +124,7 @@ where
     F: FnOnce() -> uefi::Result<Vec<u8>>,
 {
     // If we get a variable size, a variable already exist.
-    if variable_exists(name, vendor) != Ok(true) {
+    if runtime::variable_exists(name, vendor) != Ok(true) {
         runtime::set_variable(name, vendor, attributes, &get_fallback_value()?)?;
     }
 
@@ -200,7 +172,7 @@ pub fn export_efi_variables(stub_info_name: &str) -> Result<()> {
                         uefi::proto::device_path::text::DisplayOnly(false),
                         uefi::proto::device_path::text::AllowShortcuts(false),
                     )
-                    .map(|ps| cstr16_to_bytes(&ps).to_vec())
+                    .map(|ps| ps.as_bytes().to_vec())
             } else {
                 // If we cannot retrieve the filepath of the loaded image
                 // Then, we cannot set `LoaderImageIdentifier`.
