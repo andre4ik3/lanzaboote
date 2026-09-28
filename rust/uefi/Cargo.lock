@@ -119,6 +119,7 @@ dependencies = [
  "goblin",
  "log",
  "pio",
+ "sha2",
  "uefi",
 ]
 

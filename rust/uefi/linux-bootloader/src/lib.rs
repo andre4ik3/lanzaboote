@@ -8,6 +8,7 @@ pub mod efivars;
 pub mod linux_loader;
 pub mod measure;
 pub mod pe_loader;
+pub mod random_seed;
 pub mod tpm;
 pub mod uefi_helpers;
 pub mod unified_sections;

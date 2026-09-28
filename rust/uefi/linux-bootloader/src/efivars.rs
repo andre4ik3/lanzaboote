@@ -133,7 +133,13 @@ where
 
 /// Exports systemd-stub style EFI variables
 pub fn export_efi_variables(stub_info_name: &str) -> Result<()> {
-    let stub_features: EfiStubFeatures = EfiStubFeatures::ReportBootPartition;
+    // What this stub does, so that bootctl and systemd act on it (e.g. systemd-cryptsetup only
+    // measures volume keys into PCR 15 when the stub measured the kernel).
+    let stub_features = EfiStubFeatures::ReportBootPartition
+        | EfiStubFeatures::PickUpCredentials
+        | EfiStubFeatures::PickUpSysExts
+        | EfiStubFeatures::ThreePcrs
+        | EfiStubFeatures::RandomSeed;
 
     let loaded_image = boot::open_protocol_exclusive::<LoadedImage>(boot::image_handle())?;
 
