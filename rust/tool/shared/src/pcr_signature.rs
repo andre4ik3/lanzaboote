@@ -50,6 +50,23 @@ pub struct PcrPolicySignatureEntry {
 
 type PcrPolicySignature = HashMap<String, Vec<PcrPolicySignatureEntry>>;
 
+/// The SHA-256 PCR 11 policies a `.pcrsig` section holds signatures for, and by which keys:
+/// `(pkfp, pol)` pairs, hex as systemd-measure writes them. `pkfp` is the SHA-256 of the key's
+/// PKCS#1 DER, `pol` the signed policy digest.
+pub fn signed_pcr11_policies(pcrsig: &[u8]) -> Result<Vec<(String, String)>> {
+    // The section is padded to the file alignment with zeroes.
+    let end = pcrsig.iter().rposition(|b| *b != 0).map_or(0, |i| i + 1);
+    let signature: PcrPolicySignature =
+        serde_json::from_slice(&pcrsig[..end]).context("Invalid .pcrsig section")?;
+    Ok(signature
+        .get("sha256")
+        .into_iter()
+        .flatten()
+        .filter(|entry| entry.pcrs == [11])
+        .map(|entry| (entry.pkfp.clone(), entry.pol.clone()))
+        .collect())
+}
+
 /// Combine multiple PCR policy signatures into one (and remove duplicates)
 fn combine_pcr_policy_signatures(policy_signatures: Vec<PcrPolicySignature>) -> PcrPolicySignature {
     let mut result = PcrPolicySignature::new();
