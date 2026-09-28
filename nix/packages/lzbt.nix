@@ -3,6 +3,7 @@
   buildRustApp,
   makeBinaryWrapper,
   binutils-unwrapped,
+  cryptsetup,
   openssl,
   openssl-tpm2-engine,
   pkg-config,
@@ -52,6 +53,8 @@ buildRustApp {
       let
         path = lib.makeBinPath [
           binutils-unwrapped
+          # Reading LUKS2 headers, to check new generations can still unlock them.
+          cryptsetup
           # `lzbt tpm`: certificates, enrollment updates, and creating and approving TPM keys.
           openssl
           openssl-tpm2-engine

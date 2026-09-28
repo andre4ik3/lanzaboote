@@ -1,6 +1,7 @@
 mod architecture;
 mod cli;
 mod esp;
+mod guard;
 mod install;
 mod pcrlock;
 mod tpm;

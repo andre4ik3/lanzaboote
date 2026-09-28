@@ -14,6 +14,7 @@ use tempfile::TempDir;
 
 use crate::architecture::SystemdArchitectureExt;
 use crate::esp::SystemdEspPaths;
+use crate::guard::{self, UkiInputs};
 use crate::pcrlock::{PcrlockPaths, lock_pe};
 use crate::version::SystemdVersion;
 use lanzaboote_tool::architecture::Architecture;
@@ -78,6 +79,7 @@ impl InstallerBuilder {
 
         Installer {
             broken_gens: BTreeSet::new(),
+            refused: Vec::new(),
             gc_roots,
             lanzaboote_stub: self.lanzaboote_stub,
             pcr_signature_config: self.pcr_signature_config,
@@ -96,6 +98,9 @@ impl InstallerBuilder {
 
 pub struct Installer<S: Signer> {
     broken_gens: BTreeSet<u64>,
+    /// New generations not installed because they would not unlock this machine's disks, with
+    /// the reasons.
+    refused: Vec<(String, Vec<String>)>,
     gc_roots: Roots,
     lanzaboote_stub: PathBuf,
     pcr_signature_config: Option<PathBuf>,
@@ -140,7 +145,9 @@ impl<S: Signer> Installer<S> {
 
         self.install_systemd_boot()?;
 
-        if self.broken_gens.is_empty() {
+        // A refused generation still counts against the configuration limit: collecting garbage
+        // would delete the oldest good one from the ESP, and repeated refusals all of them.
+        if self.broken_gens.is_empty() && self.refused.is_empty() {
             log::info!("Collecting garbage...");
             // Only collect garbage in these two directories on the ESP. This way, no files that do
             // not belong to the NixOS installation are deleted. Lanzatool takes full control over
@@ -162,7 +169,7 @@ impl<S: Signer> Installer<S> {
             if let Some(pcrlock_paths) = &self.pcrlock_paths {
                 self.gc_roots.collect_garbage(pcrlock_paths.lanzaboote())?;
             }
-        } else {
+        } else if !self.broken_gens.is_empty() {
             // This might produce a ridiculous message if you have a lot of malformed generations.
             let warning = indoc::formatdoc! {"
                 Garbage collection is disabled because you have malformed NixOS generations that do
@@ -173,6 +180,23 @@ impl<S: Signer> Installer<S> {
             ", self.broken_gens.iter().map(ToString::to_string).collect::<Vec<String>>().join(" ")};
             log::warn!("{warning}");
         };
+
+        if !self.refused.is_empty() {
+            let refused = self
+                .refused
+                .iter()
+                .map(|(generation, problems)| {
+                    format!("generation {generation}:\n  {}", problems.join("\n  "))
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            anyhow::bail!(
+                "Not installed, because the next boot of them would not unlock this machine's \
+                 disks with the TPM:\n{refused}\nThe ESP boots the generations it had before. \
+                 If the recovery key is expected for this boot, install again with {}=1.",
+                guard::ALLOW_RECOVERY_ENV
+            );
+        }
 
         log::info!("Successfully installed Lanzaboote.");
         Ok(())
@@ -316,6 +340,31 @@ impl<S: Signer> Installer<S> {
 
         let lanzaboote_image_path = lanzaboote_image(&tempdir, &parameters)
             .context("Failed to build and sign lanzaboote stub image.")?;
+
+        // Checked before anything that makes the generation bootable: a refused generation is
+        // not signed, and gets no pcrlock component, so no policy allows it.
+        if !guard::allow_recovery() {
+            let problems = guard::check_generation(
+                generation,
+                &UkiInputs {
+                    image: &lanzaboote_image_path,
+                    kernel: &bootspec.kernel,
+                    initrd: &initrd_location,
+                    cmdline: &kernel_cmdline.join(" "),
+                    os_release: &os_release_contents,
+                },
+            )
+            .with_context(|| format!("Failed to check generation {}", generation.version_tag()))?;
+            if !problems.is_empty() {
+                log::error!(
+                    "Not installing generation {}: {}",
+                    generation.version_tag(),
+                    problems.join("; ")
+                );
+                self.refused.push((generation.version_tag(), problems));
+                return Ok(());
+            }
+        }
 
         if let Some(pcrlock_paths) = &self.pcrlock_paths {
             let lanzaboote_image_pcrlock =

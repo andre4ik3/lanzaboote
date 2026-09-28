@@ -24,31 +24,73 @@ pub struct ExtendedBootJson {
 #[derive(Debug, Clone, Deserialize)]
 pub struct LanzabooteExtension {
     pub sort_key: String,
+    /// What the generation's initrd does to unlock disks. `None` for generations built before
+    /// lanzaboote recorded it.
+    #[serde(default)]
+    pub initrd: Option<InitrdUnlock>,
 }
 
 impl Default for LanzabooteExtension {
     fn default() -> Self {
         Self {
             sort_key: String::from("lanzaboote"),
+            initrd: None,
         }
+    }
+}
+
+/// The parts of an initrd that decide whether it can unlock its LUKS volumes with the TPM.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct InitrdUnlock {
+    /// The volumes the initrd opens, as in its crypttab.
+    #[serde(default)]
+    pub luks: Vec<InitrdLuksDevice>,
+    /// Whether the initrd measures its boot phases into PCR 11 (`systemd-pcrphase-initrd`).
+    #[serde(default)]
+    pub pcrphases: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct InitrdLuksDevice {
+    /// The mapper name, which is also part of what `tpm2-measure-pcr=` measures.
+    pub name: String,
+    pub device: PathBuf,
+    /// The crypttab options, exactly as the initrd gets them.
+    pub options: Vec<String>,
+}
+
+impl InitrdLuksDevice {
+    /// Whether the crypttab options contain `key` (as `key` or `key=value`), and its value.
+    pub fn option(&self, key: &str) -> Option<&str> {
+        self.options.iter().find_map(|option| {
+            let (k, v) = option.split_once('=').unwrap_or((option, ""));
+            (k == key).then_some(v)
+        })
+    }
+}
+
+impl LanzabooteExtension {
+    fn from_extensions(extensions: &HashMap<String, serde_json::Value>) -> Self {
+        let Some(value) = extensions.get("org.nix-community.lanzaboote") else {
+            return Self::default();
+        };
+        serde_json::from_value(value.clone()).unwrap_or_else(|e| {
+            // Without it, the generation installs with the default sort key and unchecked.
+            log::warn!("Ignoring the unreadable lanzaboote bootspec extension: {e}");
+            Self::default()
+        })
     }
 }
 
 impl From<bootspec::Specialisation> for LanzabooteExtension {
     fn from(spec: bootspec::Specialisation) -> Self {
-        spec.extensions
-            .get("org.nix-community.lanzaboote")
-            .and_then(|v| serde_json::from_value::<LanzabooteExtension>(v.clone()).ok())
-            .unwrap_or_default()
+        Self::from_extensions(&spec.extensions)
     }
 }
 
 impl From<bootspec::BootJson> for LanzabooteExtension {
     fn from(spec: bootspec::BootJson) -> Self {
-        spec.extensions
-            .get("org.nix-community.lanzaboote")
-            .and_then(|v| serde_json::from_value::<LanzabooteExtension>(v.clone()).ok())
-            .unwrap_or_default()
+        Self::from_extensions(&spec.extensions)
     }
 }
 

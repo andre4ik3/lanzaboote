@@ -44,6 +44,8 @@ let
 
   installHook = pkgs.writeShellScriptBin "lzbt" (
     ''
+      # A failed install (e.g. a generation lzbt refused) must fail the hook, and so the switch.
+      set -e
       ${lib.concatStringsSep "\n" (map mkInstallCommand efiSysMountPoints)}
     ''
     + lib.optionalString cfg.measuredBoot.enable ''
@@ -571,6 +573,24 @@ in
     boot.bootspec = {
       extensions."org.nix-community.lanzaboote" = {
         sort_key = config.boot.lanzaboote.sortKey;
+        # What lzbt checks before installing a generation: that its initrd can still unlock
+        # the volumes as enrolled on this machine.
+        initrd = lib.mkIf config.boot.initrd.systemd.enable {
+          luks = lib.mapAttrsToList (name: device: {
+            inherit name;
+            inherit (device) device;
+            # As nixos/modules/system/boot/luksroot.nix writes them into the initrd's crypttab.
+            options =
+              device.crypttabExtraOpts
+              ++ lib.optional device.allowDiscards "discard"
+              ++ lib.optionals device.bypassWorkqueues [
+                "no-read-workqueue"
+                "no-write-workqueue"
+              ];
+          }) config.boot.initrd.luks.devices;
+          pcrphases =
+            config.boot.initrd.systemd.tpm2.enable && config.boot.initrd.systemd.tpm2.pcrphases.enable;
+        };
       };
     };
     boot.loader.supportsInitrdSecrets = true;
