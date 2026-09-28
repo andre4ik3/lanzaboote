@@ -35,4 +35,5 @@ in
   systemd-measured-uki = runTest ./lanzaboote/systemd-measured-uki.nix;
   systemd-cryptsetup-tpm2-signature = runTest ./lanzaboote/systemd-cryptsetup-tpm2-signature.nix;
   tpm-keys = runTest ./lanzaboote/tpm-keys.nix;
+  install-guard = runTest ./lanzaboote/install-guard.nix;
 }
