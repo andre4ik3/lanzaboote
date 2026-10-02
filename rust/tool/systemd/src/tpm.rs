@@ -57,6 +57,33 @@ impl State {
         fs::write(self.path(name), contents).with_context(|| format!("Failed to write {name}"))
     }
 
+    /// The certificates (DER) kept in the directory `name`, in order. A non-empty `replace`
+    /// first replaces them with those files.
+    fn certificates(&self, name: &str, replace: &[PathBuf]) -> Result<Vec<Vec<u8>>> {
+        let dir = self.path(name);
+        if !replace.is_empty() {
+            let certs = replace
+                .iter()
+                .map(|path| certificate_der(path))
+                .collect::<Result<Vec<_>>>()?;
+            if dir.exists() {
+                fs::remove_dir_all(&dir)?;
+            }
+            fs::create_dir(&dir)?;
+            for (i, cert) in certs.iter().enumerate() {
+                self.write(&format!("{name}/{i:02}.der"), cert)?;
+            }
+        }
+        if !dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut files: Vec<_> = fs::read_dir(&dir)?
+            .map(|entry| Ok(entry?.path()))
+            .collect::<Result<_>>()?;
+        files.sort();
+        files.iter().map(|path| certificate_der(path)).collect()
+    }
+
     /// An approval of `pcr7`, together with the PCR 15 `init` recorded.
     fn policy(&self, pcr7: [u8; 32]) -> Result<Policy> {
         let pcr15 = parse_pcr(&self.read_string("pcr15.current")?)?;
@@ -105,6 +132,18 @@ pub struct AuthorizeCommand {
     /// for a new transition window).
     #[arg(long)]
     force: bool,
+    /// Another certificate (PEM or DER) to trust in db next to the TPM db key, e.g. Microsoft's
+    /// option ROM CAs for a graphics card. Repeat for several. Kept in the state directory
+    /// (`db.extra/`): later runs without the flag keep the same db; to drop them, delete it.
+    #[arg(long = "extra-db", value_name = "CERTIFICATE")]
+    extra_db: Vec<PathBuf>,
+    /// A certificate from db (PEM or DER) that authorizes an installed card's option ROM, so it
+    /// is measured into PCR 7 before the boot loader's. Repeat in the order firmware loads them;
+    /// only the CA that actually signed the ROM counts. The keys are approved for PCR 7 both with
+    /// and without the cards (`pcr7.enrolled-option-roms`, `pcr7.enrolled`). Kept in the state
+    /// directory (`option-rom-authorities/`) like `--extra-db`.
+    #[arg(long = "option-rom-authority", value_name = "CERTIFICATE")]
+    option_rom_authorities: Vec<PathBuf>,
 }
 
 #[derive(Parser)]
@@ -249,11 +288,20 @@ fn authorize(args: AuthorizeCommand) -> Result<()> {
         log::info!("Keeping the existing certificates and enrollment updates; renewing approvals.");
     }
 
+    let extra_db = state.certificates("db.extra", &args.extra_db)?;
+    let option_rom_authorities =
+        state.certificates("option-rom-authorities", &args.option_rom_authorities)?;
+
     let pk = SignatureList::x509(owner, pem_certificate_der(&args.pk_certificate)?).to_bytes()?;
     let kek =
         SignatureList::x509(owner, pem_certificate_der(&state.path("KEK.crt"))?).to_bytes()?;
     let db_cert = pem_certificate_der(&state.path("db.crt"))?;
-    let db = SignatureList::x509(owner, db_cert.clone()).to_bytes()?;
+    // Our key first, then the extra certificates, one list each (they differ in size).
+    let db = std::iter::once(&db_cert)
+        .chain(&extra_db)
+        .map(|cert| SignatureList::x509(owner, cert.clone()).to_bytes())
+        .collect::<Result<Vec<_>>>()?
+        .concat();
 
     // All three signed by the PK: firmware accepts them in setup mode, and they can re-enroll
     // the same state after a firmware reset.
@@ -267,19 +315,43 @@ fn authorize(args: AuthorizeCommand) -> Result<()> {
             let update = auth::sign(variable, data, &timestamp, &args.pk, &args.pk_certificate)?;
             state.write(&format!("{}.auth", variable.name()), update)?;
         }
+    } else if auth::data_of(&state.read("db.auth")?)? != db.as_slice() {
+        // Only db changed (extra certificates): re-sign its update alone. KEK and the
+        // certificates stay, so nothing else needs to be enrolled again.
+        let update = auth::sign(
+            SecureBootVariable::Db,
+            &db,
+            &auth::efi_time_now(),
+            &args.pk,
+            &args.pk_certificate,
+        )?;
+        state.write("db.auth", update)?;
+        log::info!("db changed: issued a new db.auth. Stage and enroll it to take effect.");
     }
 
     let dbx = state.read("dbx.esl")?;
-    let enrolled = pcr7::predict(
-        &SecureBootState {
-            pk: &pk,
-            kek: &kek,
-            db: &db,
-            dbx: &dbx,
-        },
-        &db_cert,
-    )?;
+    let enrolled_state = SecureBootState {
+        pk: &pk,
+        kek: &kek,
+        db: &db,
+        dbx: &dbx,
+    };
+    let enrolled = pcr7::predict(&enrolled_state, &[&db_cert])?;
     state.write("pcr7.enrolled", hex(&enrolled))?;
+    // With the option ROM cards installed, their CAs are measured before the boot loader's.
+    // Without them, PCR 7 is `enrolled`, which stays approved: the machine boots either way.
+    let with_option_roms = if option_rom_authorities.is_empty() {
+        None
+    } else {
+        let authorities: Vec<&[u8]> = option_rom_authorities
+            .iter()
+            .chain(std::iter::once(&db_cert))
+            .map(Vec::as_slice)
+            .collect();
+        let pcr7 = pcr7::predict(&enrolled_state, &authorities)?;
+        state.write("pcr7.enrolled-option-roms", hex(&pcr7))?;
+        Some(pcr7)
+    };
 
     let current = parse_pcr(&state.read_string("pcr7.current")?)?;
     let deadline =
@@ -294,6 +366,15 @@ fn authorize(args: AuthorizeCommand) -> Result<()> {
         &state.policy(enrolled)?,
         &args.pk,
     )?;
+    if let Some(pcr7) = with_option_roms {
+        approve(
+            &state,
+            &["db"],
+            "enrolled-option-roms",
+            &state.policy(pcr7)?,
+            &args.pk,
+        )?;
+    }
     approve(
         &state,
         &["db"],
@@ -491,6 +572,17 @@ fn pem_certificate_der(path: &Path) -> Result<Vec<u8>> {
     Certificate::from_der(&der)
         .with_context(|| format!("Invalid certificate {}", path.display()))?;
     Ok(der)
+}
+
+/// The DER bytes of a certificate file, PEM or DER.
+fn certificate_der(path: &Path) -> Result<Vec<u8>> {
+    let data = fs::read(path).with_context(|| format!("Failed to read {}", path.display()))?;
+    if data.starts_with(b"-----BEGIN") {
+        return pem_certificate_der(path);
+    }
+    Certificate::from_der(&data)
+        .with_context(|| format!("Invalid certificate {}", path.display()))?;
+    Ok(data)
 }
 
 /// The contents of an EFI variable (without efivarfs' attribute prefix), if it exists.

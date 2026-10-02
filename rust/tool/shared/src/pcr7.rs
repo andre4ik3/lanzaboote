@@ -3,8 +3,8 @@
 //! so a key can be bound to the PCR 7 value a machine will have after enrollment.
 //!
 //! Firmware extends PCR 7, in order, with the `SecureBoot`, `PK`, `KEK`, `db` and `dbx` variables,
-//! a separator, and the `db` entry that authorized the boot loader. Every variable event is an
-//! `EFI_VARIABLE_DATA`:
+//! a separator, and then each `db` entry that authorized an image (option ROMs, the boot loader),
+//! the first time it does so in that boot. Every variable event is an `EFI_VARIABLE_DATA`:
 //!
 //! ```text
 //! VariableName (GUID) | UnicodeNameLength (u64) | VariableDataLength (u64)
@@ -40,13 +40,30 @@ fn variable_event(name: &str, vendor: Guid, data: &[u8]) -> Vec<u8> {
     .concat()
 }
 
-/// Predict PCR 7 (SHA-256 bank) with Secure Boot enabled, `state` enrolled, and the boot loader
-/// authorized by the `db` entry holding `authority` (a DER certificate).
-pub fn predict(state: &SecureBootState, authority: &[u8]) -> Result<[u8; 32]> {
+/// Predict PCR 7 (SHA-256 bank) with Secure Boot enabled and `state` enrolled.
+///
+/// `authorities` are the `db` certificates (DER) that authorize images in this boot, in the order
+/// firmware first uses them: e.g. the CA of a graphics card's option ROM, then the boot loader's.
+/// Firmware measures each authority once per boot (EDK2: `DxeImageVerificationLib`), so repeats
+/// add nothing. An authority in db that nothing uses is not measured, which is why the caller,
+/// not db, says which ones apply.
+pub fn predict(state: &SecureBootState, authorities: &[&[u8]]) -> Result<[u8; 32]> {
     let db = SignatureList::parse_all(state.db).context("Failed to parse db")?;
-    let authority = find_certificate(&db, authority)
-        .context("The authorizing certificate is not in db")?
-        .to_bytes();
+    let mut measured: Vec<&[u8]> = Vec::new();
+    let mut authority_events = Vec::new();
+    for authority in authorities {
+        if measured.contains(authority) {
+            continue;
+        }
+        measured.push(authority);
+        let entry =
+            find_certificate(&db, authority).context("An authorizing certificate is not in db")?;
+        authority_events.push(variable_event(
+            "db",
+            guid::IMAGE_SECURITY_DATABASE,
+            &entry.to_bytes(),
+        ));
+    }
 
     let events = [
         variable_event("SecureBoot", guid::GLOBAL_VARIABLE, &[1]),
@@ -56,8 +73,9 @@ pub fn predict(state: &SecureBootState, authority: &[u8]) -> Result<[u8; 32]> {
         variable_event("dbx", guid::IMAGE_SECURITY_DATABASE, state.dbx),
         // EV_SEPARATOR for a successful boot.
         0u32.to_le_bytes().to_vec(),
-        variable_event("db", guid::IMAGE_SECURITY_DATABASE, &authority),
-    ];
+    ]
+    .into_iter()
+    .chain(authority_events);
 
     let mut pcr = [0u8; 32];
     for event in events {
@@ -74,6 +92,7 @@ pub fn predict(state: &SecureBootState, authority: &[u8]) -> Result<[u8; 32]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::efi::SignatureData;
 
     const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/pcr7");
 
@@ -118,7 +137,7 @@ mod tests {
                 dbx: &[],
             };
             let expected = String::from_utf8(read("pcr7.hex")).unwrap();
-            let predicted = predict(&state, &our_certificate(&db)).unwrap();
+            let predicted = predict(&state, &[&our_certificate(&db)]).unwrap();
             assert_eq!(hex(&predicted), expected.trim(), "PCR 7 of {machine}");
         }
     }
@@ -134,7 +153,49 @@ mod tests {
             db: &db,
             dbx: &[],
         };
-        assert!(predict(&state, &[2; 8]).is_err());
-        assert!(predict(&state, &[1; 8]).is_ok());
+        assert!(predict(&state, &[&[2; 8]]).is_err());
+        assert!(predict(&state, &[&[1; 8]]).is_ok());
+    }
+
+    /// One authority event per distinct certificate after the separator, in first-use order.
+    #[test]
+    fn measures_each_authority_once_in_order() {
+        let owner = guid::GLOBAL_VARIABLE;
+        let (rom_ca, ours) = (vec![1; 8], vec![2; 8]);
+        let db = [
+            SignatureList::x509(owner, ours.clone()).to_bytes().unwrap(),
+            SignatureList::x509(owner, rom_ca.clone())
+                .to_bytes()
+                .unwrap(),
+        ]
+        .concat();
+        let state = SecureBootState {
+            pk: &[],
+            kek: &[],
+            db: &db,
+            dbx: &[],
+        };
+        let extend = |pcr: [u8; 32], cert: &[u8]| -> [u8; 32] {
+            let entry = SignatureData {
+                owner,
+                data: cert.to_vec(),
+            };
+            let event = variable_event("db", guid::IMAGE_SECURITY_DATABASE, &entry.to_bytes());
+            Sha256::new()
+                .chain_update(pcr)
+                .chain_update(Sha256::digest(event))
+                .finalize()
+                .into()
+        };
+
+        let separator = predict(&state, &[]).unwrap();
+        let with_rom = predict(&state, &[&rom_ca, &ours]).unwrap();
+        assert_eq!(predict(&state, &[&ours]).unwrap(), extend(separator, &ours));
+        assert_eq!(with_rom, extend(extend(separator, &rom_ca), &ours));
+        assert_eq!(
+            with_rom,
+            predict(&state, &[&rom_ca, &ours, &rom_ca, &ours]).unwrap()
+        );
+        assert_ne!(with_rom, predict(&state, &[&ours, &rom_ca]).unwrap());
     }
 }
