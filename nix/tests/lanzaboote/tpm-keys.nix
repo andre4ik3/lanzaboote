@@ -279,5 +279,46 @@ in
           t.assertIn("Secure Boot: enabled (user)", machine.succeed("bootctl status"))
           t.assertEqual(pcr7(), enrolled)
           t.assertTrue(can_sign("db"))
+
+      with subtest("lzbt tpm authorize --extra-db: only db.auth is re-signed, and kept on later runs"):
+          sh(
+              "openssl req -x509 -newkey rsa:2048 -nodes -keyout /tmp/extra.key "
+              "-subj '/CN=Extra CA/' -days 36500 -outform DER -out /tmp/extra.der"
+          )
+          kept = f"sha256sum {state}/db.crt {state}/KEK.crt {state}/PK.auth {state}/KEK.auth"
+          before = sh(kept)
+          db_auth = sh(f"sha256sum {state}/db.auth")
+          authorize = (
+              f"OPENSSL_CONF=/etc/ssl/pkcs11.cnf lzbt tpm authorize {state} "
+              f"--pk '{pk_uri}' --pk-certificate /var/lib/token/PK.crt"
+          )
+          sh(f"{authorize} --extra-db /tmp/extra.der")
+          t.assertEqual(sh(kept), before)
+          t.assertNotEqual(sh(f"sha256sum {state}/db.auth"), db_auth)
+          with_extra = sh(f"cat {state}/pcr7.enrolled").strip()
+          t.assertNotEqual(with_extra, enrolled)
+          db_auth = sh(f"sha256sum {state}/db.auth")
+          sh(authorize)
+          t.assertEqual(sh(f"sha256sum {state}/db.auth"), db_auth, "same db: not re-signed")
+          t.assertEqual(sh(f"cat {state}/pcr7.enrolled").strip(), with_extra)
+          # An option ROM CA: approved for PCR 7 with the card, and still without it.
+          sh(f"{authorize} --option-rom-authority /tmp/extra.der")
+          t.assertEqual(sh(f"sha256sum {state}/db.auth"), db_auth)
+          t.assertEqual(sh(f"cat {state}/pcr7.enrolled").strip(), with_extra)
+          with_rom = sh(f"cat {state}/pcr7.enrolled-option-roms").strip()
+          t.assertNotEqual(with_rom, with_extra)
+          sh(f"signed_tpm2_policy ls {state}/db.key | grep -q enrolled-option-roms")
+
+      with subtest("Enrolling the new db: both certificates trusted, PCR 7 as predicted"):
+          sh(f"cp {state}/db.auth /boot/loader/keys/auto/db.auth && sync")
+          sh(
+              f"OPENSSL_CONF=/etc/ssl/pkcs11.cnf lzbt tpm clear-keys "
+              f"--pk '{pk_uri}' --pk-certificate /var/lib/token/PK.crt"
+          )
+          reboot()
+          t.assertIn("Secure Boot: enabled (user)", machine.succeed("bootctl status"))
+          t.assertEqual(db_subjects(), ["subject=CN=Database Key (TPM)", "subject=CN=Extra CA"])
+          t.assertEqual(pcr7(), with_extra)
+          t.assertTrue(can_sign("db"))
     '';
 }
