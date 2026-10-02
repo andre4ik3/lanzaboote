@@ -169,13 +169,22 @@ pub struct ApproveCommand {
 }
 
 #[derive(Parser)]
+#[command(group = clap::ArgGroup::new("source").required(true).args(["pk", "from"]))]
 pub struct ClearKeysCommand {
     /// The current PK's private key (anything OpenSSL can load)
-    #[arg(long)]
-    pk: String,
+    #[arg(long, requires = "pk_certificate")]
+    pk: Option<String>,
     /// The current PK's certificate (PEM)
-    #[arg(long)]
-    pk_certificate: PathBuf,
+    #[arg(long, requires = "pk")]
+    pk_certificate: Option<PathBuf>,
+    /// Only sign the deletions, into this directory, for `--from` on the machine. Works on any
+    /// machine with the PK: nothing is read from or written to firmware.
+    #[arg(long, requires = "pk", value_name = "DIR")]
+    sign_to: Option<PathBuf>,
+    /// Apply deletions signed earlier with `--sign-to`, without the PK. They stay valid until
+    /// the variables are written with a newer timestamp (e.g. by the next enrollment).
+    #[arg(long, value_name = "DIR")]
+    from: Option<PathBuf>,
 }
 
 impl TpmCommand {
@@ -196,7 +205,17 @@ impl TpmCommand {
                 };
                 approve(&state, &keys, &args.name, &policy, &args.pk)
             }
-            Self::ClearKeys(args) => clear_keys(&args.pk, &args.pk_certificate),
+            Self::ClearKeys(args) => match (args.pk, args.pk_certificate, args.from) {
+                (Some(pk), Some(certificate), None) => {
+                    let updates = sign_deletions(&pk, &certificate)?;
+                    match args.sign_to {
+                        Some(dir) => write_deletions(&dir, &updates),
+                        None => apply_deletions(&updates),
+                    }
+                }
+                (None, None, Some(dir)) => apply_deletions(&read_deletions(&dir)?),
+                _ => unreachable!("clap requires --pk with --pk-certificate, or --from"),
+            },
         }
     }
 }
@@ -435,29 +454,79 @@ pub fn stage(dir: &Path, esp: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Delete KEK, PK and db with empty updates signed by the current PK (`key`: anything OpenSSL
-/// can load), so the next boot is in setup mode and enrolls `loader/keys/auto`.
+/// The variables `clear-keys` deletes, in order.
 ///
 /// Deleting KEK and db too means enrollment doesn't depend on the staged updates being newer
 /// than what firmware stored: some firmware rejects older ones even in setup mode, leaving the
 /// old KEK and db enrolled. The PK authorizes KEK updates, so the KEK goes first, while the
 /// firmware still verifies. db updates need a KEK signature, so db goes last, once deleting the
 /// PK has put the firmware in setup mode. dbx stays: enrollment does not replace it, and the
-/// PCR 7 prediction counts on it. Safe to repeat: deleted variables are skipped.
-pub fn clear_keys(key: &str, certificate: &Path) -> Result<()> {
-    for variable in [
-        SecureBootVariable::Kek,
-        SecureBootVariable::Pk,
-        SecureBootVariable::Db,
-    ] {
+/// PCR 7 prediction counts on it.
+const DELETED: [SecureBootVariable; 3] = [
+    SecureBootVariable::Kek,
+    SecureBootVariable::Pk,
+    SecureBootVariable::Db,
+];
+
+/// Empty updates for [`DELETED`], signed by the current PK (`key`: anything OpenSSL can load).
+fn sign_deletions(key: &str, certificate: &Path) -> Result<Vec<(SecureBootVariable, Vec<u8>)>> {
+    let timestamp = auth::efi_time_now();
+    DELETED
+        .iter()
+        .map(|&variable| {
+            Ok((
+                variable,
+                auth::sign(variable, &[], &timestamp, key, certificate)?,
+            ))
+        })
+        .collect()
+}
+
+fn deletion_file(dir: &Path, variable: SecureBootVariable) -> PathBuf {
+    dir.join(format!("{}.delete.auth", variable.name()))
+}
+
+fn write_deletions(dir: &Path, updates: &[(SecureBootVariable, Vec<u8>)]) -> Result<()> {
+    fs::create_dir_all(dir)?;
+    for (variable, update) in updates {
+        let path = deletion_file(dir, *variable);
+        fs::write(&path, update).with_context(|| format!("Failed to write {}", path.display()))?;
+    }
+    log::info!(
+        "Signed the deletions into {}. On the machine: `lzbt tpm clear-keys --from` that directory.",
+        dir.display()
+    );
+    Ok(())
+}
+
+fn read_deletions(dir: &Path) -> Result<Vec<(SecureBootVariable, Vec<u8>)>> {
+    DELETED
+        .iter()
+        .map(|&variable| {
+            let path = deletion_file(dir, variable);
+            let update =
+                fs::read(&path).with_context(|| format!("Failed to read {}", path.display()))?;
+            ensure!(
+                auth::data_of(&update)?.is_empty(),
+                "{} is not a deletion",
+                path.display()
+            );
+            Ok((variable, update))
+        })
+        .collect()
+}
+
+/// Delete KEK, PK and db with the signed `updates` (see [`DELETED`]), so the next boot is in
+/// setup mode and enrolls `loader/keys/auto`. Safe to repeat: deleted variables are skipped.
+fn apply_deletions(updates: &[(SecureBootVariable, Vec<u8>)]) -> Result<()> {
+    for (variable, update) in updates {
         let name = variable.name();
         if read_efivar(name, variable.vendor())?.is_none() {
             log::info!("{name} is already deleted.");
             continue;
         }
-        let update = auth::sign(variable, &[], &auth::efi_time_now(), key, certificate)?;
-        let result = write_efivar(name, variable.vendor(), &update);
-        if variable == SecureBootVariable::Db {
+        let result = write_efivar(name, variable.vendor(), update);
+        if *variable == SecureBootVariable::Db {
             result.context(
                 "Failed to delete db (the firmware may only enter setup mode on the next boot). \
                  KEK and PK are deleted: the next boot is in setup mode and replaces db with the \
@@ -470,6 +539,12 @@ pub fn clear_keys(key: &str, certificate: &Path) -> Result<()> {
     }
     log::info!("The firmware is in setup mode: the next boot enrolls loader/keys/auto, if staged.");
     Ok(())
+}
+
+/// Delete KEK, PK and db with updates signed by the current PK (`key`: anything OpenSSL can
+/// load). See [`apply_deletions`].
+pub fn clear_keys(key: &str, certificate: &Path) -> Result<()> {
+    apply_deletions(&sign_deletions(key, certificate)?)
 }
 
 /// Write an authenticated update to an existing EFI variable through efivarfs.
