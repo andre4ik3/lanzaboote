@@ -309,12 +309,18 @@ in
           t.assertNotEqual(with_rom, with_extra)
           sh(f"signed_tpm2_policy ls {state}/db.key | grep -q enrolled-option-roms")
 
-      with subtest("Enrolling the new db: both certificates trusted, PCR 7 as predicted"):
+      with subtest("Enrolling the new db: deletions signed ahead (--sign-to), applied without the PK"):
           sh(f"cp {state}/db.auth /boot/loader/keys/auto/db.auth && sync")
           sh(
               f"OPENSSL_CONF=/etc/ssl/pkcs11.cnf lzbt tpm clear-keys "
-              f"--pk '{pk_uri}' --pk-certificate /var/lib/token/PK.crt"
+              f"--pk '{pk_uri}' --pk-certificate /var/lib/token/PK.crt --sign-to /tmp/deletions"
           )
+          sh("test -e /sys/firmware/efi/efivars/PK-8be4df61-93ca-11d2-aa0d-00e098032b8c")
+          # No token: --from only replays the signed updates.
+          sh("lzbt tpm clear-keys --from /tmp/deletions")
+          for var in ["PK-8be4df61-93ca-11d2-aa0d-00e098032b8c", "KEK-8be4df61-93ca-11d2-aa0d-00e098032b8c",
+                      "db-d719b2cb-3d3a-4596-a3bc-dad00e67656f"]:
+              machine.fail(f"test -e /sys/firmware/efi/efivars/{var}")
           reboot()
           t.assertIn("Secure Boot: enabled (user)", machine.succeed("bootctl status"))
           t.assertEqual(db_subjects(), ["subject=CN=Database Key (TPM)", "subject=CN=Extra CA"])
