@@ -588,7 +588,7 @@ in
         sort_key = config.boot.lanzaboote.sortKey;
         # What lzbt checks before installing a generation: that its initrd can still unlock
         # the volumes as enrolled on this machine.
-        initrd = lib.mkIf config.boot.initrd.systemd.enable {
+        initrd = {
           luks = lib.mapAttrsToList (name: device: {
             inherit name;
             inherit (device) device;
