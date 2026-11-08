@@ -571,16 +571,6 @@ in
         ) cfg.measuredBoot.pcrSignatures;
         message = "boot.lanzaboote.measuredBoot.pcrSignatures: entries with privateKeySource need certificateFile.";
       }
-      {
-        assertion = cfg.measuredBoot.enable -> (configurationLimit > 0 && configurationLimit <= 4);
-        message = ''
-          If Measured Boot is enabled, you cannot store more than 4 generations on the ESP.
-
-            This is a strict limit introduced and enforced by systemd-pcrlock.
-
-            Set `boot.lanzaboote.configurationLimit = 4;` to reduce the number of generations you store.
-        '';
-      }
     ];
 
     boot.bootspec = {
